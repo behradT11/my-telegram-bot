@@ -159,7 +159,9 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     referrer_id, has_joined = result[0], result[1]
     
     if has_joined:
-        await query.edit_message_text("شما قبلاً عضویت خود را تایید کرده‌اید.", reply_markup=get_main_menu_keyboard())
+        await query.edit_message_text("شما قبلاً عضویت خود را تایید کرده‌اید.")
+        # Also send the main menu just in case
+        await context.bot.send_message(chat_id=user_id, text="منوی اصلی:", reply_markup=get_main_menu_keyboard())
         conn.close()
         return
 
@@ -182,7 +184,38 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                     text=f"✅ کاربر دعوت شده ({user_mention}) عضو کانال شد. **یک امتیاز** به شما اضافه شد.\n\nامتیاز فعلی شما: {new_score}"
                 )
             
-            await query.edit_message_text("عضویت شما با موفقیت تایید شد! اکنون می‌توانید از ربات استفاده کنید.", reply_markup=get_main_menu_keyboard())
+            # --- NEW HELP MESSAGE WITH PHOTO ---
+            # 1. Delete the "Join Channel" message
+            await query.delete_message()
+
+            # 2. Define the help caption
+            help_caption = (
+                "🎉 عضویت شما با موفقیت تایید شد!\n\n"
+                "**راهنمای ربات:**\n\n"
+                "🔹 **دریافت لینک دعوت:**\n"
+                "با استفاده از این دکمه، لینک اختصاصی خود را برای دعوت دوستانتان دریافت کنید.\n\n"
+                "🔹 **امتیاز من:**\n"
+                "در این بخش می‌توانید امتیاز فعلی و لیست کاربرانی که دعوت کرده‌اید را مشاهده کنید.\n\n"
+                "موفق باشید!"
+            )
+
+            # 3. Send a photo with the help caption
+            # !!! IMPORTANT: Replace this URL with your own image URL !!!
+            photo_url = "https://placehold.co/800x400/1e293b/ffffff?text=Welcome!"
+            await context.bot.send_photo(
+                chat_id=user_id,
+                photo=photo_url,
+                caption=help_caption,
+                parse_mode='Markdown'
+            )
+
+            # 4. Send the main menu keyboard
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="منوی اصلی برای شما فعال شد:",
+                reply_markup=get_main_menu_keyboard()
+            )
+
         else:
             await query.message.reply_text("شما هنوز عضو کانال نیستید. لطفاً ابتدا در کانال عضو شوید و سپس دوباره دکمه را فشار دهید.")
     except TelegramError as e:
@@ -252,4 +285,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
