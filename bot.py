@@ -456,7 +456,7 @@ async def admin_button_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             total_banned = cursor.fetchone()[0]
             conn.close()
 
-            message = f"� *لیست کاربران مسدود (صفحه {page + 1})*\n\n"
+            message = f"🚫 *لیست کاربران مسدود (صفحه {page + 1})*\n\n"
             keyboard = []
             if not banned_users:
                 message += "هیچ کاربر مسدودی یافت نشد."
@@ -595,8 +595,9 @@ def main() -> None:
             ]
         },
         fallbacks=[CommandHandler("cancel", cancel_broadcast)],
-        per_message=False,
-        per_user=True
+        # --- BUG FIX for startup warning ---
+        per_user=True,
+        per_chat=True
     )
     
     # Add handlers
