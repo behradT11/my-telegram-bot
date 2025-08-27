@@ -51,8 +51,8 @@ def setup_database():
 def get_main_menu_keyboard():
     """Returns the persistent main menu keyboard."""
     keyboard = [
-        [KeyboardButton("🔗 دریافت لینک دعوت")],
-        [KeyboardButton("📊 امتیاز من")],
+        [KeyboardButton("🔗 دریافت لینک دعوت"), KeyboardButton("📊 امتیاز من")],
+        [KeyboardButton("🏆 رتبه بندی"), KeyboardButton("ℹ️ راهنما")] # New Help Button
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -64,7 +64,28 @@ def get_force_join_keyboard():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# --- MENU COMMANDS (HANDLED BY MESSAGEHANDLER) ---
+# --- HELPER & MENU FUNCTIONS ---
+async def send_help_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Sends the welcome photo and help message."""
+    chat_id = update.effective_chat.id
+    help_caption = (
+        "🎉 خوش آمدید!\n\n"
+        "**راهنمای ربات:**\n\n"
+        "🔹 **دریافت لینک دعوت:**\n"
+        "با استفاده از این دکمه، لینک اختصاصی خود را برای دعوت دوستانتان دریافت کنید.\n\n"
+        "🔹 **امتیاز من:**\n"
+        "در این بخش می‌توانید امتیاز فعلی و لیست کاربرانی که دعوت کرده‌اید را مشاهده کنید.\n\n"
+        "🔹 **رتبه بندی:**\n"
+        "لیست ۱۰ کاربر برتر را مشاهده کنید.\n\n"
+        "موفق باشید!"
+    )
+    # Using a more stable direct image link to prevent errors.
+    # You can replace this with your own direct image URL (e.g., from postimages.org)
+    photo_url = "https://i.postimg.cc/1X7XyC8D/welcome.png"
+    await context.bot.send_photo(
+        chat_id=chat_id, photo=photo_url, caption=help_caption, parse_mode='Markdown'
+    )
+
 async def get_my_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Sends the user their referral link."""
     user_id = update.effective_user.id
@@ -96,6 +117,25 @@ async def show_my_score(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             message += f"- {username_display}\n"
     else:
         message += "شما هنوز کسی را دعوت نکرده‌اید."
+    await update.message.reply_text(text=message, parse_mode='Markdown')
+
+async def show_leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Shows the top 10 users with the highest scores."""
+    conn = sqlite3.connect("referrals.db", check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, username, score FROM users ORDER BY score DESC LIMIT 10")
+    leaderboard = cursor.fetchall()
+    conn.close()
+    
+    message = "🏆 *۱۰ نفر برتر کانال* 🏆\n\n"
+    if leaderboard:
+        rank_emojis = ["🥇", "🥈", "🥉"]
+        for i, (user_id, username, score) in enumerate(leaderboard):
+            rank = rank_emojis[i] if i < 3 else f"**{i + 1}.**"
+            username_display = f"@{username}" if username else f"کاربر `{user_id}`"
+            message += f"{rank} {username_display} - *{score}* امتیاز\n"
+    else:
+        message += "هنوز هیچ کاربری امتیازی کسب نکرده است."
     await update.message.reply_text(text=message, parse_mode='Markdown')
 
 # --- CORE BOT LOGIC ---
@@ -160,16 +200,13 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     
     if has_joined:
         await query.edit_message_text("شما قبلاً عضویت خود را تایید کرده‌اید.")
-        # Also send the main menu just in case
         await context.bot.send_message(chat_id=user_id, text="منوی اصلی:", reply_markup=get_main_menu_keyboard())
         conn.close()
         return
 
     try:
         member = await context.bot.get_chat_member(chat_id=TARGET_CHANNEL_ID, user_id=user_id)
-        status = getattr(member, 'status', 'STATUS_NOT_FOUND')
-        
-        if status in ["member", "administrator", "creator"]:
+        if member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]:
             if referrer_id:
                 cursor.execute("UPDATE users SET score = score + 1 WHERE user_id = ?", (referrer_id,))
             cursor.execute("UPDATE users SET has_joined_channel = 1 WHERE user_id = ?", (user_id,))
@@ -184,38 +221,11 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                     text=f"✅ کاربر دعوت شده ({user_mention}) عضو کانال شد. **یک امتیاز** به شما اضافه شد.\n\nامتیاز فعلی شما: {new_score}"
                 )
             
-            # --- NEW HELP MESSAGE WITH PHOTO ---
-            # 1. Delete the "Join Channel" message
             await query.delete_message()
-
-            # 2. Define the help caption
-            help_caption = (
-                "🎉 عضویت شما با موفقیت تایید شد!\n\n"
-                "**راهنمای ربات:**\n\n"
-                "🔹 **دریافت لینک دعوت:**\n"
-                "با استفاده از این دکمه، لینک اختصاصی خود را برای دعوت دوستانتان دریافت کنید.\n\n"
-                "🔹 **امتیاز من:**\n"
-                "در این بخش می‌توانید امتیاز فعلی و لیست کاربرانی که دعوت کرده‌اید را مشاهده کنید.\n\n"
-                "موفق باشید!"
-            )
-
-            # 3. Send a photo with the help caption
-            # !!! IMPORTANT: Replace this URL with your own image URL !!!
-            photo_url = "https://placehold.co/800x400/1e293b/ffffff?text=Welcome!"
-            await context.bot.send_photo(
-                chat_id=user_id,
-                photo=photo_url,
-                caption=help_caption,
-                parse_mode='Markdown'
-            )
-
-            # 4. Send the main menu keyboard
+            await send_help_message(query, context)
             await context.bot.send_message(
-                chat_id=user_id,
-                text="منوی اصلی برای شما فعال شد:",
-                reply_markup=get_main_menu_keyboard()
+                chat_id=user_id, text="منوی اصلی برای شما فعال شد:", reply_markup=get_main_menu_keyboard()
             )
-
         else:
             await query.message.reply_text("شما هنوز عضو کانال نیستید. لطفاً ابتدا در کانال عضو شوید و سپس دوباره دکمه را فشار دهید.")
     except TelegramError as e:
@@ -225,12 +235,31 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         conn.close()
 
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles text messages from the persistent menu."""
+    """Handles text messages from the persistent menu after checking channel membership."""
+    user_id = update.effective_user.id
+    
+    # --- NEW: Membership check before every command ---
+    try:
+        member = await context.bot.get_chat_member(chat_id=TARGET_CHANNEL_ID, user_id=user_id)
+        if member.status not in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]:
+            await update.message.reply_text(
+                "به نظر می‌رسد شما دیگر عضو کانال نیستید! برای استفاده از ربات، لطفاً مجدداً در کانال عضو شوید و عضویت خود را بررسی کنید.",
+                reply_markup=get_force_join_keyboard()
+            )
+            return
+    except TelegramError:
+        await update.message.reply_text("خطایی در بررسی عضویت شما رخ داد. لطفاً لحظاتی بعد دوباره تلاش کنید.")
+        return
+
     text = update.message.text
     if text == "🔗 دریافت لینک دعوت":
         await get_my_link(update, context)
     elif text == "📊 امتیاز من":
         await show_my_score(update, context)
+    elif text == "🏆 رتبه بندی":
+        await show_leaderboard(update, context)
+    elif text == "ℹ️ راهنما":
+        await send_help_message(update, context)
 
 async def track_channel_members(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Tracks when a user LEAVES the channel to deduct points."""
@@ -285,5 +314,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
