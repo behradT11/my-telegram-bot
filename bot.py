@@ -25,7 +25,7 @@ from telegram.ext import (
 import time
 import requests
 
-URL = "https://your-app.onrender.com/"  # آدرس بات/سرویس خودت رو اینجا بذار
+URL = "https://dashboard.render.com/web/srv-d2nc8c7fte5s7397t5m0"  # آدرس بات/سرویس خودت رو اینجا بذار
 
 while True:
     try:
