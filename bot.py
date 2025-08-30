@@ -14,41 +14,6 @@ from telegram.ext import (
     CallbackQueryHandler, MessageHandler, filters, ConversationHandler
 )
 
-
-
-
-
-
-
-
-
-import time
-import requests
-
-URL = "https://dashboard.render.com/web/srv-d2nc8c7fte5s7397t5m0"  # آدرس بات/سرویس خودت رو اینجا بذار
-
-while True:
-    try:
-        r = requests.get(URL, timeout=10)
-        print(f"{time.ctime()} -> {r.status_code}")
-    except Exception as e:
-        print(f"{time.ctime()} -> ERROR: {e}")
-    
-    time.sleep(300)  # هر 5 دقیقه یه بار پینگ
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # --- CONFIGURATION ---
 TOKEN = "8470707180:AAE8C8WISVBZAgS9Yw1M8Y1F6WBU2FXpuBc"
 TARGET_CHANNEL_ID = -1002267992305
