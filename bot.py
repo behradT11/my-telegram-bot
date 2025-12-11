@@ -3,6 +3,7 @@ import sqlite3
 import datetime
 import pytz
 import os
+import time
 from threading import Thread
 from flask import Flask
 from telegram import (
@@ -23,7 +24,7 @@ from telegram.ext import (
     CallbackQueryHandler,
     JobQueue
 )
-from telegram.error import BadRequest
+from telegram.error import BadRequest, Conflict, NetworkError
 
 # ---------------------------------------------------------------------------
 # تنظیمات و کانفیگ
@@ -512,6 +513,12 @@ async def nightly_report(context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"Nightly report failed: {e}")
 
 # ---------------------------------------------------------------------------
+# مدیریت خطاها
+# ---------------------------------------------------------------------------
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logging.error(msg="Exception while handling an update:", exc_info=context.error)
+
+# ---------------------------------------------------------------------------
 # اجرا
 # ---------------------------------------------------------------------------
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -525,6 +532,9 @@ if __name__ == '__main__':
     init_db()
     
     app_bot = ApplicationBuilder().token(BOT_TOKEN).build()
+    
+    # اضافه کردن هندلر خطا
+    app_bot.add_error_handler(error_handler)
     
     # تنظیم جاب برای گزارش شبانه (هر 24 ساعت - مثلا ساعت 22 به وقت سرور)
     # تذکر: ساعت سرور رندر UTC است.
@@ -552,7 +562,6 @@ if __name__ == '__main__':
             
             MAIN_MENU: [
                 MessageHandler(filters.Regex('^(📊 آمار کامل کاربران|❌ حذف کاربر|📢 پیام همگانی|🔙 خروج از پنل)$'), admin_handler),
-                # اینجا دستور ادمین را اضافه کردیم تا در منوی اصلی کار کند
                 CommandHandler('admin', admin_command),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, menu_handler)
             ],
@@ -568,5 +577,22 @@ if __name__ == '__main__':
     app_bot.add_handler(CallbackQueryHandler(join_callback, pattern='^check_join$'))
     app_bot.add_handler(CallbackQueryHandler(referral_action, pattern='^(confirm|reject)_'))
     
-    print("Bot is running with Web Server...")
-    app_bot.run_polling()
+    print("Bot is starting with Auto-Retry for Conflicts...")
+    
+    # حلقه برای تلاش مجدد در صورت ارور Conflict
+    while True:
+        try:
+            # drop_pending_updates=True باعث میشود اگر پیام گیر کرده‌ای از قبل مانده بود، باعث تداخل نشود
+            app_bot.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+            # اگر برنامه عادی بسته شد، حلقه را بشکن
+            break
+        except Conflict:
+            logging.error("Conflict Error: Another instance is running. Retrying in 5 seconds...")
+            print("⚠️ تداخل! نسخه قبلی هنوز بسته نشده. تلاش مجدد در 5 ثانیه...")
+            time.sleep(5)
+        except NetworkError:
+            logging.error("Network Error. Retrying in 5 seconds...")
+            time.sleep(5)
+        except Exception as e:
+            logging.error(f"Unexpected Error: {e}")
+            time.sleep(10)
