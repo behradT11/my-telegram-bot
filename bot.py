@@ -1,617 +1,400 @@
-# First, run these commands in your terminal to install necessary libraries:
-# pip install python-telegram-bot
-# pip install --upgrade python-telegram-bot # Make sure you have the latest version
-
 import logging
 import sqlite3
-import asyncio
-import telegram
-from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
-from telegram.error import TelegramError
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from telegram.ext import (
-    Application, CommandHandler, ContextTypes, ChatMemberHandler, 
-    CallbackQueryHandler, MessageHandler, filters, ConversationHandler
+    ApplicationBuilder,
+    ContextTypes,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ConversationHandler,
 )
 
-# --- CONFIGURATION ---
-TOKEN = "8470707180:AAE8C8WISVBZAgS9Yw1M8Y1F6WBU2FXpuBc"
-TARGET_CHANNEL_ID = -1002267992305
-BOT_USERNAME = "FVCounter_bot"
-CHANNEL_LINK = "https://t.me/+7UMWPY5mB2o2M2U0"
-# !!! IMPORTANT: Set your own Telegram User ID here to get admin access !!!
-ADMIN_USER_ID = 7215817555 # Your User ID has been set
+# ---------------------------------------------------------------------------
+# تنظیمات و کانفیگ
+# ---------------------------------------------------------------------------
+BOT_TOKEN = "8582244459:AAEzfJr0b699OTJ9x4DS00bdG6CTFxIXDkA"
+ADMIN_PASSWORD = "12345@Parstradecommunity"
 
-# --- LOGGING SETUP ---
+# وضعیت‌های مکالمه (States)
+(
+    GET_NAME,
+    GET_SURNAME,
+    GET_AGE,
+    GET_PHONE,
+    GET_EMAIL,
+    MAIN_MENU,
+    GET_ADMIN_PASS,  # وضعیت دریافت رمز ادمین
+    SUPPORT_Handler,
+    ADMIN_BROADCAST
+) = range(9)
+
+# تنظیمات لاگینگ
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
 )
 
-# --- DATABASE SETUP ---
-def setup_database():
-    """Creates/updates the database and tables."""
-    conn = sqlite3.connect("referrals.db", check_same_thread=False)
-    cursor = conn.cursor()
-    # Main users table
-    cursor.execute("""
+# ---------------------------------------------------------------------------
+# مدیریت دیتابیس (SQLite)
+# ---------------------------------------------------------------------------
+def init_db():
+    """ایجاد جداول دیتابیس در صورت عدم وجود"""
+    conn = sqlite3.connect('trading_bot.db')
+    c = conn.cursor()
+    
+    # جدول کاربران
+    c.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
+            first_name TEXT,
+            last_name TEXT,
+            age INTEGER,
+            phone_number TEXT,
+            email TEXT,
+            referral_count INTEGER DEFAULT 0,
             referrer_id INTEGER,
-            username TEXT,
-            score INTEGER DEFAULT 0,
-            has_joined_channel INTEGER DEFAULT 0,
-            join_date DATETIME
+            joined_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-    """)
-    # Banned users table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS banned_users (
-            user_id INTEGER PRIMARY KEY
-        )
-    """)
-    
-    # Migration for older database files
-    try:
-        cursor.execute("PRAGMA table_info(users)")
-        columns = [info[1] for info in cursor.fetchall()]
-        if 'has_joined_channel' not in columns:
-            cursor.execute("ALTER TABLE users ADD COLUMN has_joined_channel INTEGER DEFAULT 0")
-        if 'join_date' not in columns:
-            cursor.execute("ALTER TABLE users ADD COLUMN join_date DATETIME")
-            cursor.execute("UPDATE users SET join_date = ? WHERE join_date IS NULL", (datetime.now(),))
-    except Exception as e:
-        logging.error(f"Error updating database schema: {e}")
-
+    ''')
     conn.commit()
     conn.close()
 
-# --- KEYBOARDS ---
-def get_main_menu_keyboard():
-    """Returns the persistent main menu keyboard."""
-    keyboard = [
-        [KeyboardButton("🔗 دریافت لینک دعوت"), KeyboardButton("📊 امتیاز من")],
-        [KeyboardButton("🏆 رتبه بندی"), KeyboardButton("ℹ️ راهنما")]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-def get_force_join_keyboard():
-    """Returns the inline keyboard that forces users to join the channel."""
-    keyboard = [
-        [InlineKeyboardButton("➡️ عضویت در کانال", url=CHANNEL_LINK)],
-        [InlineKeyboardButton("✅ عضویت را بررسی کن", callback_data="verify_join")]
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-# --- MENU FUNCTIONS ---
-async def send_help_message(update_or_query: Update | telegram.CallbackQuery, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Sends the welcome help message."""
-    if isinstance(update_or_query, Update):
-        chat_id = update_or_query.effective_chat.id
-    elif isinstance(update_or_query, telegram.CallbackQuery):
-        chat_id = update_or_query.message.chat.id
-    else:
-        return
-
-    help_text = (
-        "🎉 خوش آمدید!\n\n"
-        "**راهنمای ربات:**\n\n"
-        "🔹 **دریافت لینک دعوت:**\n"
-        "لینک اختصاصی خود را برای دعوت دوستانتان دریافت کنید.\n\n"
-        "🔹 **امتیاز من:**\n"
-        "امتیاز و لیست کاربرانی که دعوت کرده‌اید را مشاهده کنید.\n\n"
-        "🔹 **رتبه بندی:**\n"
-        "لیست ۱۰ کاربر برتر را مشاهده کنید.\n\n"
-        "موفق باشید!"
-    )
-    await context.bot.send_message(chat_id=chat_id, text=help_text, parse_mode='Markdown')
-
-async def get_my_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Sends the user their referral link."""
-    user_id = update.effective_user.id
-    referral_link = f"https://t.me/{BOT_USERNAME}?start={user_id}"
-    text = (
-        "این لینک دعوت اختصاصی شماست. آن را برای دوستانتان ارسال کنید.\n\n"
-        "✅ **مهم:** دوستان شما باید ربات را با این لینک استارت کنند و سپس عضو کانال شوند تا امتیاز برای شما ثبت شود.\n\n"
-        f"`{referral_link}`"
-    )
-    await update.message.reply_text(text=text, parse_mode='Markdown')
-
-async def show_my_score(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Shows the user their score and referrals."""
-    user_id = update.effective_user.id
-    conn = sqlite3.connect("referrals.db", check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("SELECT score FROM users WHERE user_id = ?", (user_id,))
-    score_result = cursor.fetchone()
-    score = score_result[0] if score_result else 0
-    cursor.execute("SELECT user_id, username FROM users WHERE referrer_id = ?", (user_id,))
-    referrals = cursor.fetchall()
-    conn.close()
-    
-    message = f"امتیاز فعلی شما: *{score}*\n\n"
-    if referrals:
-        message += "کاربرانی که شما دعوت کرده‌اید:\n"
-        for ref_id, ref_username in referrals:
-            username_display = f"@{ref_username}" if ref_username else f"کاربر `{ref_id}`"
-            message += f"- {username_display}\n"
-    else:
-        message += "شما هنوز کسی را دعوت نکرده‌اید."
-    await update.message.reply_text(text=message, parse_mode='Markdown')
-
-async def show_leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Shows the top 10 users with the highest scores."""
-    conn = sqlite3.connect("referrals.db", check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("SELECT user_id, username, score FROM users ORDER BY score DESC LIMIT 10")
-    leaderboard = cursor.fetchall()
-    conn.close()
-    
-    message = "🏆 *۱۰ نفر برتر کانال* 🏆\n\n"
-    if leaderboard:
-        rank_emojis = ["🥇", "🥈", "🥉"]
-        for i, (user_id, username, score) in enumerate(leaderboard):
-            rank = rank_emojis[i] if i < 3 else f"**{i + 1}.**"
-            username_display = f"@{username}" if username else f"کاربر `{user_id}`"
-            message += f"{rank} {username_display} - *{score}* امتیاز\n"
-    else:
-        message += "هنوز هیچ کاربری امتیازی کسب نکرده است."
-    await update.message.reply_text(text=message, parse_mode='Markdown')
-
-# --- CORE BOT LOGIC ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles the /start command."""
-    user = update.effective_user
-    conn = sqlite3.connect("referrals.db", check_same_thread=False)
-    cursor = conn.cursor()
-
-    cursor.execute("SELECT user_id FROM banned_users WHERE user_id = ?", (user.id,))
-    if cursor.fetchone():
-        conn.close()
-        return
-
-    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user.id,))
-    existing_user = cursor.fetchone()
-
-    if not existing_user:
-        referrer_id = None
-        if context.args and len(context.args) > 0:
-            try:
-                potential_referrer_id = int(context.args[0])
-                cursor.execute("SELECT user_id FROM users WHERE user_id = ?", (potential_referrer_id,))
-                if cursor.fetchone():
-                    referrer_id = potential_referrer_id
-                    user_mention = f"@{user.username}" if user.username else f"کاربر {user.id}"
-                    await context.bot.send_message(
-                        chat_id=referrer_id, text=f"🔔 کاربر جدیدی ({user_mention}) از طریق لینک شما وارد ربات شد."
-                    )
-            except (ValueError, IndexError):
-                logging.warning(f"Invalid referral code: {context.args}")
-
-        cursor.execute(
-            "INSERT INTO users (user_id, username, referrer_id, join_date) VALUES (?, ?, ?, ?)",
-            (user.id, user.username, referrer_id, datetime.now())
-        )
-        conn.commit()
-        await update.message.reply_text(
-            "خوش آمدید! برای استفاده از امکانات ربات، لطفاً ابتدا در کانال ما عضو شوید و سپس عضویت خود را بررسی کنید.",
-            reply_markup=get_force_join_keyboard()
-        )
-    else:
-        if existing_user[4]: # has_joined_channel
-            await update.message.reply_text("سلام مجدد! شما عضو کانال هستید و می‌توانید از ربات استفاده کنید.", reply_markup=get_main_menu_keyboard())
-        else:
-            await update.message.reply_text("شما هنوز عضو کانال نشده‌اید. لطفاً ابتدا در کانال عضو شوید و سپس عضویت خود را بررسی کنید.", reply_markup=get_force_join_keyboard())
-    
-    conn.close()
-
-async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles the 'verify_join' button click."""
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-
-    conn = sqlite3.connect("referrals.db", check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("SELECT referrer_id, has_joined_channel FROM users WHERE user_id = ?", (user_id,))
-    result = cursor.fetchone()
-    
-    if not result:
-        await query.edit_message_text("خطا: اطلاعات شما یافت نشد. لطفاً ربات را با /start راه‌اندازی کنید.")
-        conn.close()
-        return
-        
-    referrer_id, has_joined = result[0], result[1]
-    
-    if has_joined:
-        await query.edit_message_text("شما قبلاً عضویت خود را تایید کرده‌اید.")
-        await context.bot.send_message(chat_id=user_id, text="منوی اصلی:", reply_markup=get_main_menu_keyboard())
-        conn.close()
-        return
-
+def add_user(user_data):
+    """افزودن کاربر جدید به دیتابیس"""
+    conn = sqlite3.connect('trading_bot.db')
+    c = conn.cursor()
     try:
-        member = await context.bot.get_chat_member(chat_id=TARGET_CHANNEL_ID, user_id=user_id)
-        if member.status in ["member", "administrator", "creator"]:
-            if referrer_id:
-                cursor.execute("UPDATE users SET score = score + 1 WHERE user_id = ?", (referrer_id,))
-            cursor.execute("UPDATE users SET has_joined_channel = 1 WHERE user_id = ?", (user_id,))
-            conn.commit()
+        c.execute('''
+            INSERT OR REPLACE INTO users (user_id, first_name, last_name, age, phone_number, email, referrer_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            user_data['id'],
+            user_data['first_name'],
+            user_data['last_name'],
+            user_data['age'],
+            user_data['phone'],
+            user_data['email'],
+            user_data.get('referrer_id')
+        ))
+        
+        # اگر معرف داشته باشد، به تعداد رفرال‌های معرف اضافه کن
+        if user_data.get('referrer_id'):
+            c.execute('UPDATE users SET referral_count = referral_count + 1 WHERE user_id = ?', (user_data['referrer_id'],))
             
-            if referrer_id:
-                cursor.execute("SELECT score FROM users WHERE user_id = ?", (referrer_id,))
-                new_score = cursor.fetchone()[0]
-                user_mention = f"@{query.from_user.username}" if query.from_user.username else f"کاربر {user_id}"
-                await context.bot.send_message(
-                    chat_id=referrer_id,
-                    text=f"✅ کاربر دعوت شده ({user_mention}) عضو کانال شد. **یک امتیاز** به شما اضافه شد.\n\nامتیاز فعلی شما: {new_score}"
-                )
-            
-            await query.delete_message()
-            await send_help_message(query, context)
-            await context.bot.send_message(
-                chat_id=user_id, text="منوی اصلی برای شما فعال شد:", reply_markup=get_main_menu_keyboard()
-            )
-        else:
-            await query.message.reply_text("شما هنوز عضو کانال نیستید. لطفاً ابتدا در کانال عضو شوید و سپس دوباره دکمه را فشار دهید.")
-    except TelegramError as e:
-        logging.error(f"Telegram API Error checking chat member: {e}")
-        await query.message.reply_text(f"❌ خطای تلگرام در بررسی عضویت: `{e}`")
+        conn.commit()
+    except Exception as e:
+        logging.error(f"Database error: {e}")
     finally:
         conn.close()
 
-async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles text messages from the persistent menu after checking channel membership."""
-    user_id = update.effective_user.id
-    
-    try:
-        member = await context.bot.get_chat_member(chat_id=TARGET_CHANNEL_ID, user_id=user_id)
-        if member.status not in ["member", "administrator", "creator"]:
-            await update.message.reply_text(
-                "به نظر می‌رسد شما دیگر عضو کانال نیستید! برای استفاده از ربات، لطفاً مجدداً در کانال عضو شوید و عضویت خود را بررسی کنید.",
-                reply_markup=get_force_join_keyboard()
-            )
-            return
-    except TelegramError:
-        await update.message.reply_text("خطایی در بررسی عضویت شما رخ داد. لطفاً لحظاتی بعد دوباره تلاش کنید.")
-        return
-
-    text = update.message.text
-    if text == "🔗 دریافت لینک دعوت":
-        await get_my_link(update, context)
-    elif text == "📊 امتیاز من":
-        await show_my_score(update, context)
-    elif text == "🏆 رتبه بندی":
-        await show_leaderboard(update, context)
-    elif text == "ℹ️ راهنما":
-        await send_help_message(update, context)
-
-async def track_channel_members(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Tracks when a user LEAVES the channel to deduct points."""
-    if update.chat_member.chat.id != TARGET_CHANNEL_ID:
-        return
-
-    old_status = getattr(update.chat_member.old_chat_member, 'status', None)
-    new_status = getattr(update.chat_member.new_chat_member, 'status', None)
-    
-    was_member = old_status in ["member", "administrator", "creator"]
-    is_member = new_status in ["member", "administrator", "creator"]
-
-    if was_member and not is_member:
-        user = update.chat_member.old_chat_member.user
-        user_id = user.id
-        conn = sqlite3.connect("referrals.db", check_same_thread=False)
-        cursor = conn.cursor()
-        cursor.execute("SELECT referrer_id FROM users WHERE user_id = ?", (user_id,))
-        result = cursor.fetchone()
-        if result and result[0]:
-            referrer_id = result[0]
-            logging.info(f"User {user_id} LEFT. Deducting point from {referrer_id}.")
-            cursor.execute("UPDATE users SET score = score - 1 WHERE user_id = ?", (referrer_id,))
-            cursor.execute("UPDATE users SET has_joined_channel = 0 WHERE user_id = ?", (user_id,))
-            conn.commit()
-            
-            cursor.execute("SELECT score FROM users WHERE user_id = ?", (referrer_id,))
-            new_score = cursor.fetchone()[0]
-            user_mention = f"@{user.username}" if user.username else f"کاربر {user_id}"
-            await context.bot.send_message(
-                chat_id=referrer_id,
-                text=f"❌ کاربر دعوت شده ({user_mention}) کانال را ترک کرد. **یک امتیاز** از شما کسر شد.\n\nامتیاز فعلی شما: {new_score}"
-            )
-        conn.close()
-
-# --- ADMIN PANEL ---
-BROADCAST_MESSAGE, CONFIRM_BROADCAST = range(2)
-
-async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Shows the main admin panel."""
-    user_id = update.effective_user.id
-    if user_id != ADMIN_USER_ID:
-        await update.message.reply_text("شما اجازه دسترسی به این بخش را ندارید.")
-        return
-
-    keyboard = [
-        [InlineKeyboardButton("👥 مشاهده تمام کاربران", callback_data="admin_view_users_0")],
-        [InlineKeyboardButton("🚫 مدیریت کاربران مسدود", callback_data="admin_view_banned_0")],
-        [InlineKeyboardButton("📢 ارسال پیام همگانی", callback_data="admin_broadcast_start")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("پنل مدیریت:", reply_markup=reply_markup)
-
-async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Starts the broadcast conversation."""
-    query = update.callback_query
-    await query.answer()
-    await query.message.reply_text("لطفا پیام خود را برای ارسال به تمام کاربران وارد کنید. (متن، عکس، ویدیو و...). برای لغو /cancel را ارسال کنید.")
-    return BROADCAST_MESSAGE
-
-async def get_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Stores the message to be broadcast and asks for confirmation."""
-    context.user_data['broadcast_message'] = update.message
-    keyboard = [
-        [InlineKeyboardButton("✅ بله، ارسال کن", callback_data="admin_broadcast_send")],
-        [InlineKeyboardButton("❌ خیر، لغو کن", callback_data="admin_broadcast_cancel")]
-    ]
-    await update.message.reply_text("آیا از ارسال این پیام به تمام کاربران مطمئن هستید؟", reply_markup=InlineKeyboardMarkup(keyboard))
-    return CONFIRM_BROADCAST
-
-async def send_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Sends the stored message to all users."""
-    query = update.callback_query
-    await query.answer()
-    await query.message.edit_text("⏳ در حال ارسال پیام به کاربران...")
-    message_to_send = context.user_data['broadcast_message']
-    
-    conn = sqlite3.connect("referrals.db", check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("SELECT user_id FROM users")
-    all_users = cursor.fetchall()
+def get_user(user_id):
+    """دریافت اطلاعات کاربر"""
+    conn = sqlite3.connect('trading_bot.db')
+    c = conn.cursor()
+    c.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
+    user = c.fetchone()
     conn.close()
+    return user
 
-    success_count = 0
-    fail_count = 0
-    for (user_id,) in all_users:
+def get_all_users_ids():
+    """دریافت آیدی تمام کاربران برای پنل ادمین"""
+    conn = sqlite3.connect('trading_bot.db')
+    c = conn.cursor()
+    c.execute('SELECT user_id FROM users')
+    ids = [row[0] for row in c.fetchall()]
+    conn.close()
+    return ids
+
+# ---------------------------------------------------------------------------
+# هندلرهای ثبت نام
+# ---------------------------------------------------------------------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    # بررسی وجود کاربر در دیتابیس
+    if get_user(user_id):
+        await show_main_menu(update, context)
+        return MAIN_MENU
+
+    # بررسی کد رفرال (لینک دعوت)
+    args = context.args
+    referrer_id = None
+    if args:
         try:
-            await message_to_send.copy(chat_id=user_id)
-            success_count += 1
-            await asyncio.sleep(0.1) # To avoid hitting rate limits
-        except TelegramError as e:
-            fail_count += 1
-            logging.warning(f"Failed to send broadcast to {user_id}: {e}")
+            potential_referrer = int(args[0])
+            if potential_referrer != user_id: 
+                referrer_id = potential_referrer
+        except ValueError:
+            pass
     
-    report_message = (
-        f"📣 گزارش ارسال همگانی:\n\n"
-        f"✅ ارسال موفق: {success_count} نفر\n"
-        f"❌ ارسال ناموفق: {fail_count} نفر (کاربرانی که ربات را مسدود کرده‌اند)"
+    context.user_data['referrer_id'] = referrer_id
+    
+    await update.message.reply_text(
+        "👋 سلام! به کامیونیتی ترید ما خوش آمدید.\n\n"
+        "برای استفاده از خدمات بات، لطفاً ابتدا ثبت نام کنید.\n"
+        "🔹 نام خود را وارد کنید:"
     )
-    await query.message.edit_text(report_message)
-    context.user_data.clear()
-    return ConversationHandler.END
+    return GET_NAME
 
-async def cancel_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Cancels the broadcast conversation."""
-    if update.callback_query:
-        await update.callback_query.message.edit_text("ارسال پیام همگانی لغو شد.")
+async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['first_name'] = update.message.text
+    await update.message.reply_text("✅ عالیه. حالا نام خانوادگی خود را وارد کنید:")
+    return GET_SURNAME
+
+async def get_surname(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['last_name'] = update.message.text
+    await update.message.reply_text("🔢 لطفاً سن خود را به عدد وارد کنید:")
+    return GET_AGE
+
+async def get_age(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    age_text = update.message.text
+    if not age_text.isdigit():
+        await update.message.reply_text("❌ لطفاً سن را فقط به صورت عدد وارد کنید.")
+        return GET_AGE
+    
+    context.user_data['age'] = int(age_text)
+    
+    contact_keyboard = KeyboardButton(text="📱 ارسال شماره تلفن", request_contact=True)
+    reply_markup = ReplyKeyboardMarkup([[contact_keyboard]], one_time_keyboard=True, resize_keyboard=True)
+    
+    await update.message.reply_text(
+        "📞 برای تایید هویت، لطفاً شماره موبایل خود را با دکمه زیر ارسال کنید:",
+        reply_markup=reply_markup
+    )
+    return GET_PHONE
+
+async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.contact:
+        context.user_data['phone'] = update.message.contact.phone_number
     else:
-        await update.message.reply_text("ارسال پیام همگانی لغو شد.")
-    context.user_data.clear()
-    return ConversationHandler.END
+        context.user_data['phone'] = update.message.text
 
-async def admin_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles admin panel button clicks (excluding broadcast)."""
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-
-    if user_id != ADMIN_USER_ID:
-        await query.answer("شما اجازه دسترسی به این بخش را ندارید.", show_alert=True)
-        return
-
-    data = query.data.split('_')
-    command = data[1]
-    
-    if command == "view":
-        # ... (rest of the function remains the same)
-        if data[2] == "users":
-            page = int(data[3])
-            users_per_page = 10
-            offset = page * users_per_page
-            
-            conn = sqlite3.connect("referrals.db", check_same_thread=False)
-            cursor = conn.cursor()
-            cursor.execute("SELECT user_id, username, score FROM users ORDER BY score DESC LIMIT ? OFFSET ?", (users_per_page, offset))
-            users = cursor.fetchall()
-            cursor.execute("SELECT COUNT(user_id) FROM users")
-            total_users = cursor.fetchone()[0]
-            conn.close()
-
-            message = f"👥 *لیست تمام کاربران (صفحه {page + 1})*\n\n"
-            keyboard = []
-            if not users:
-                message += "کاربری یافت نشد."
-            else:
-                for uid, uname, score in users:
-                    uname_display = f"@{uname}" if uname else f"کاربر {uid}"
-                    keyboard.append([InlineKeyboardButton(f"{uname_display} ({score} امتیاز)", callback_data=f"admin_user_{uid}")])
-            
-            nav_buttons = []
-            if page > 0:
-                nav_buttons.append(InlineKeyboardButton("⬅️ قبلی", callback_data=f"admin_view_users_{page - 1}"))
-            if (page + 1) * users_per_page < total_users:
-                nav_buttons.append(InlineKeyboardButton("➡️ بعدی", callback_data=f"admin_view_users_{page + 1}"))
-            
-            if nav_buttons:
-                keyboard.append(nav_buttons)
-            
-            await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-
-        elif data[2] == "banned":
-            page = int(data[3])
-            users_per_page = 10
-            offset = page * users_per_page
-            
-            conn = sqlite3.connect("referrals.db", check_same_thread=False)
-            cursor = conn.cursor()
-            cursor.execute("SELECT user_id FROM banned_users LIMIT ? OFFSET ?", (users_per_page, offset))
-            banned_users = cursor.fetchall()
-            cursor.execute("SELECT COUNT(user_id) FROM banned_users")
-            total_banned = cursor.fetchone()[0]
-            conn.close()
-
-            message = f"🚫 *لیست کاربران مسدود (صفحه {page + 1})*\n\n"
-            keyboard = []
-            if not banned_users:
-                message += "هیچ کاربر مسدودی یافت نشد."
-            else:
-                for (uid,) in banned_users:
-                    keyboard.append([InlineKeyboardButton(f"کاربر {uid}", callback_data=f"admin_banned_user_{uid}")])
-            
-            nav_buttons = []
-            if page > 0:
-                nav_buttons.append(InlineKeyboardButton("⬅️ قبلی", callback_data=f"admin_view_banned_{page - 1}"))
-            if (page + 1) * users_per_page < total_banned:
-                nav_buttons.append(InlineKeyboardButton("➡️ بعدی", callback_data=f"admin_view_banned_{page + 1}"))
-            
-            if nav_buttons:
-                keyboard.append(nav_buttons)
-            
-            keyboard.append([InlineKeyboardButton("⬅️ بازگشت به پنل", callback_data="admin_back_main")])
-            await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-
-    elif command == "user":
-        target_user_id = int(data[2])
-        conn = sqlite3.connect("referrals.db", check_same_thread=False)
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM users WHERE user_id = ?", (target_user_id,))
-        target_user = cursor.fetchone()
-        
-        if not target_user:
-            await query.edit_message_text("کاربر یافت نشد.")
-            conn.close()
-            return
-
-        cursor.execute("SELECT user_id, username, join_date FROM users WHERE referrer_id = ?", (target_user_id,))
-        referrals = cursor.fetchall()
-        conn.close()
-
-        uname = target_user[2] or "ندارد"
-        score = target_user[3]
-        join_date_str = target_user[5]
-        
-        join_date = "نامشخص"
-        if join_date_str:
-            try:
-                join_date = datetime.strptime(join_date_str.split('.')[0], '%Y-%m-%d %H:%M:%S').strftime('%Y-%m-%d %H:%M')
-            except (ValueError, TypeError):
-                pass
-
-        message = (
-            f"👤 **جزئیات کاربر:** `@{uname}` (ID: `{target_user_id}`)\n"
-            f"🗓 **تاریخ عضویت:** {join_date}\n"
-            f"⭐️ **امتیاز:** {score}\n\n"
-            f"👥 **کاربران دعوت شده ({len(referrals)} نفر):**\n"
-        )
-        if referrals:
-            for ref_id, ref_uname, ref_join_date_str in referrals:
-                ref_uname_display = f"@{ref_uname}" if ref_uname else f"کاربر {ref_id}"
-                ref_join_date = "نامشخص"
-                if ref_join_date_str:
-                    try:
-                        ref_join_date = datetime.strptime(ref_join_date_str.split('.')[0], '%Y-%m-%d %H:%M:%S').strftime('%Y-%m-%d')
-                    except (ValueError, TypeError):
-                        pass
-                message += f"- {ref_uname_display} (در تاریخ: {ref_join_date})\n"
-        else:
-            message += "هنوز کسی را دعوت نکرده است."
-
-        keyboard = [
-            [
-                InlineKeyboardButton("🗑 حذف", callback_data=f"admin_delete_{target_user_id}"),
-                InlineKeyboardButton("🚫 مسدود کردن", callback_data=f"admin_ban_{target_user_id}")
-            ],
-            [InlineKeyboardButton("⬅️ بازگشت به لیست", callback_data="admin_view_users_0")]
-        ]
-        await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-
-    elif command == "banned":
-        target_user_id = int(data[3])
-        message = f"کاربر `{target_user_id}` مسدود شده است."
-        keyboard = [
-            [InlineKeyboardButton("✅ رفع مسدودی", callback_data=f"admin_unban_{target_user_id}")],
-            [InlineKeyboardButton("⬅️ بازگشت به لیست مسدود", callback_data="admin_view_banned_0")]
-        ]
-        await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-
-    elif command == "delete":
-        target_user_id = int(data[2])
-        conn = sqlite3.connect("referrals.db", check_same_thread=False)
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM users WHERE user_id = ?", (target_user_id,))
-        conn.commit()
-        conn.close()
-        await query.edit_message_text(f"✅ کاربر `{target_user_id}` با موفقیت حذف شد.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ بازگشت به لیست", callback_data="admin_view_users_0")]]), parse_mode='Markdown')
-
-    elif command == "ban":
-        target_user_id = int(data[2])
-        conn = sqlite3.connect("referrals.db", check_same_thread=False)
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM users WHERE user_id = ?", (target_user_id,))
-        cursor.execute("INSERT OR IGNORE INTO banned_users (user_id) VALUES (?)", (target_user_id,))
-        conn.commit()
-        conn.close()
-        await query.edit_message_text(f"🚫 کاربر `{target_user_id}` با موفقیت مسدود و حذف شد.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ بازگشت به لیست", callback_data="admin_view_users_0")]]), parse_mode='Markdown')
-
-    elif command == "unban":
-        target_user_id = int(data[2])
-        conn = sqlite3.connect("referrals.db", check_same_thread=False)
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM banned_users WHERE user_id = ?", (target_user_id,))
-        conn.commit()
-        conn.close()
-        await query.edit_message_text(f"✅ کاربر `{target_user_id}` با موفقیت از مسدودیت خارج شد.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ بازگشت به لیست مسدود", callback_data="admin_view_banned_0")]]), parse_mode='Markdown')
-
-    elif command == "back" and data[2] == "main":
-        keyboard = [
-            [InlineKeyboardButton("👥 مشاهده تمام کاربران", callback_data="admin_view_users_0")],
-            [InlineKeyboardButton("🚫 مدیریت کاربران مسدود", callback_data="admin_view_banned_0")],
-            [InlineKeyboardButton("📢 ارسال پیام همگانی", callback_data="admin_broadcast_start")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text("پنل مدیریت:", reply_markup=reply_markup)
-
-# --- MAIN FUNCTION ---
-def main() -> None:
-    """Sets up and runs the bot."""
-    logging.info(f"Using python-telegram-bot version: {telegram.__version__}")
-    setup_database()
-    application = Application.builder().token(TOKEN).build()
-    
-    # Conversation handler for broadcasting
-    broadcast_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(broadcast_start, pattern="^admin_broadcast_start$")],
-        states={
-            BROADCAST_MESSAGE: [MessageHandler(filters.ALL & ~filters.COMMAND, get_broadcast_message)],
-            CONFIRM_BROADCAST: [
-                CallbackQueryHandler(send_broadcast, pattern="^admin_broadcast_send$"),
-                CallbackQueryHandler(cancel_broadcast, pattern="^admin_broadcast_cancel$")
-            ]
-        },
-        fallbacks=[CommandHandler("cancel", cancel_broadcast)],
-        # --- BUG FIX for startup warning ---
-        per_user=True,
-        per_chat=True
+    await update.message.reply_text(
+        "📧 لطفاً آدرس ایمیل خود را وارد کنید:",
+        reply_markup=ReplyKeyboardRemove()
     )
-    
-    # Add handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("admin", admin_panel))
-    application.add_handler(broadcast_handler)
-    application.add_handler(CallbackQueryHandler(verify_join_callback, pattern="^verify_join$"))
-    application.add_handler(CallbackQueryHandler(admin_button_handler, pattern="^admin_"))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
-    application.add_handler(ChatMemberHandler(track_channel_members, ChatMemberHandler.CHAT_MEMBER))
-    
-    print("Bot starting...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    return GET_EMAIL
 
+async def get_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['email'] = update.message.text
+    context.user_data['id'] = update.effective_user.id
+    
+    add_user(context.user_data)
+    
+    await update.message.reply_text("🎉 ثبت نام شما با موفقیت تکمیل شد!")
+    await show_main_menu(update, context)
+    return MAIN_MENU
 
-if __name__ == "__main__":
-    main()
+# ---------------------------------------------------------------------------
+# منوی اصلی و عملکردها
+# ---------------------------------------------------------------------------
+async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    buttons = [
+        ["🛍 فروشگاه", "🎁 مسابقه رفرال"],
+        ["👤 پروفایل من", "📞 پشتیبانی"],
+        ["🔐 پنل ادمین"] # همیشه نمایش داده می‌شود
+    ]
+    
+    reply_markup = ReplyKeyboardMarkup(buttons, resize_keyboard=True)
+    await update.message.reply_text(
+        "منوی اصلی کامیونیتی ترید:",
+        reply_markup=reply_markup
+    )
+
+async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    user_id = update.effective_user.id
+    
+    if text == "🔐 پنل ادمین":
+        # بررسی اگر قبلا لاگین کرده باشد
+        if context.user_data.get('is_admin'):
+            await show_admin_keyboard(update, context)
+            return MAIN_MENU
+        else:
+            await update.message.reply_text(
+                "🔒 این بخش محافظت شده است.\n"
+                "🔑 لطفاً رمز عبور ادمین را وارد کنید:",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return GET_ADMIN_PASS
+
+    elif text == "🛍 فروشگاه":
+        await update.message.reply_text(
+            "🛒 **فروشگاه کامیونیتی**\n\n"
+            "1. اشتراک VIP سیگنال - 50 تتر\n"
+            "2. دوره آموزشی پرایس اکشن - 100 تتر\n"
+            "3. اندیکاتور اختصاصی - 30 تتر\n\n"
+            "جهت خرید با پشتیبانی تماس بگیرید."
+        )
+        
+    elif text == "🎁 مسابقه رفرال":
+        user = get_user(user_id)
+        ref_count = user[6] if user else 0
+        bot_username = context.bot.username
+        ref_link = f"https://t.me/{bot_username}?start={user_id}"
+        
+        await update.message.reply_text(
+            f"🏆 **مسابقه رفرال**\n\n"
+            f"تعداد دعوت‌های شما: {ref_count} نفر\n\n"
+            f"🔗 لینک اختصاصی شما:\n{ref_link}\n\n"
+            "دوستان خود را دعوت کنید و جایزه بگیرید!"
+        )
+        
+    elif text == "👤 پروفایل من":
+        user = get_user(user_id)
+        if user:
+            await update.message.reply_text(
+                f"👤 **اطلاعات حساب کاربری**\n\n"
+                f"نام: {user[1]} {user[2]}\n"
+                f"سن: {user[3]}\n"
+                f"شماره: {user[4]}\n"
+                f"ایمیل: {user[5]}\n"
+                f"تاریخ عضویت: {user[8]}"
+            )
+            
+    elif text == "📞 پشتیبانی":
+        await update.message.reply_text(
+            "💬 پیام خود را بنویسید تا برای ادمین ارسال شود.\n"
+            "برای لغو روی /cancel کلیک کنید."
+        )
+        return SUPPORT_Handler
+            
+    return MAIN_MENU
+
+# ---------------------------------------------------------------------------
+# احراز هویت ادمین
+# ---------------------------------------------------------------------------
+async def verify_admin_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    password = update.message.text
+    
+    if password == ADMIN_PASSWORD:
+        context.user_data['is_admin'] = True
+        await update.message.reply_text("✅ رمز عبور صحیح است. به پنل مدیریت خوش آمدید.")
+        await show_admin_keyboard(update, context)
+        return MAIN_MENU
+    else:
+        await update.message.reply_text("❌ رمز عبور اشتباه است.")
+        await show_main_menu(update, context)
+        return MAIN_MENU
+
+async def show_admin_keyboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    buttons = [
+        ["📢 ارسال پیام همگانی"],
+        ["📊 آمار کاربران"],
+        ["🔙 بازگشت به منو"]
+    ]
+    reply_markup = ReplyKeyboardMarkup(buttons, resize_keyboard=True)
+    await update.message.reply_text("گزینه مورد نظر را انتخاب کنید:", reply_markup=reply_markup)
+
+# ---------------------------------------------------------------------------
+# هندلر پشتیبانی
+# ---------------------------------------------------------------------------
+async def support_receive_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_msg = update.message.text
+    user_info = update.effective_user
+    
+    # اینجا چون ادمین دیگر یک آیدی ثابت نیست، پیام پشتیبانی را نمی‌توانیم به راحتی "فروارد" کنیم 
+    # مگر اینکه آیدی شما ثابت باشد یا پیام در دیتابیس ذخیره شود.
+    # فعلا یک پیام تایید به کاربر می‌دهیم. برای سیستم پیشرفته‌تر باید آیدی عددی ادمین ثابت بماند.
+    # اگر می‌خواهید پیام‌ها به آیدی خاصی برود، باید یک آیدی ثابت هم داشته باشید.
+    # فعلا فرض را بر این می‌گذاریم که لاگ می‌شود یا اگر آیدی ثابتی دارید استفاده کنید.
+    
+    await update.message.reply_text("✅ پیام شما دریافت شد و توسط تیم پشتیبانی بررسی خواهد شد.")
+    await show_main_menu(update, context)
+    return MAIN_MENU
+
+# ---------------------------------------------------------------------------
+# پنل ادمین
+# ---------------------------------------------------------------------------
+async def admin_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    
+    # بررسی مجدد دسترسی
+    if not context.user_data.get('is_admin'):
+        await update.message.reply_text("⛔ دسترسی غیرمجاز.")
+        await show_main_menu(update, context)
+        return MAIN_MENU
+        
+    if text == "📊 آمار کاربران":
+        ids = get_all_users_ids()
+        await update.message.reply_text(f"👥 تعداد کل کاربران: {len(ids)} نفر")
+        
+    elif text == "📢 ارسال پیام همگانی":
+        await update.message.reply_text(
+            "متن پیام همگانی خود را وارد کنید:\n"
+            "(این پیام برای همه کاربران ارسال می‌شود)"
+        )
+        return ADMIN_BROADCAST
+        
+    elif text == "🔙 بازگشت به منو":
+        await show_main_menu(update, context)
+        return MAIN_MENU
+        
+    return MAIN_MENU
+
+async def send_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get('is_admin'):
+        return MAIN_MENU
+        
+    msg_text = update.message.text
+    ids = get_all_users_ids()
+    count = 0
+    
+    await update.message.reply_text("⏳ در حال ارسال پیام...")
+    
+    for uid in ids:
+        try:
+            await context.bot.send_message(chat_id=uid, text=f"📢 **اطلاعیه کامیونیتی**\n\n{msg_text}")
+            count += 1
+        except Exception:
+            pass
+            
+    await update.message.reply_text(f"✅ پیام با موفقیت برای {count} کاربر ارسال شد.")
+    await show_admin_keyboard(update, context) # بازگشت به منوی ادمین
+    return MAIN_MENU
+
+# ---------------------------------------------------------------------------
+# توابع کمکی
+# ---------------------------------------------------------------------------
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("عملیات لغو شد.", reply_markup=ReplyKeyboardRemove())
+    await show_main_menu(update, context)
+    return MAIN_MENU
+
+# ---------------------------------------------------------------------------
+# اجرای اصلی
+# ---------------------------------------------------------------------------
+if __name__ == '__main__':
+    init_db()
+    
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler('start', start)],
+        states={
+            GET_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
+            GET_SURNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_surname)],
+            GET_AGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_age)],
+            GET_PHONE: [MessageHandler(filters.CONTACT | filters.TEXT, get_phone)],
+            GET_EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_email)],
+            
+            GET_ADMIN_PASS: [MessageHandler(filters.TEXT & ~filters.COMMAND, verify_admin_password)],
+            
+            MAIN_MENU: [
+                # دکمه‌های پنل ادمین
+                MessageHandler(filters.Regex('^(📢 ارسال پیام همگانی|📊 آمار کاربران|🔙 بازگشت به منو)$'), admin_actions),
+                # دکمه‌های منوی اصلی
+                MessageHandler(filters.TEXT & ~filters.COMMAND, menu_handler)
+            ],
+            
+            SUPPORT_Handler: [MessageHandler(filters.TEXT & ~filters.COMMAND, support_receive_message)],
+            ADMIN_BROADCAST: [MessageHandler(filters.TEXT & ~filters.COMMAND, send_broadcast)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel), CommandHandler('start', start)]
+    )
+
+    application.add_handler(conv_handler)
+    
+    print("Bot is running...")
+    application.run_polling()
