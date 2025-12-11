@@ -168,9 +168,21 @@ async def check_membership(user_id, context: ContextTypes.DEFAULT_TYPE):
 
 async def get_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """دستوری برای دریافت آیدی گروه جهت تنظیمات"""
-    chat_id = update.effective_chat.id
-    chat_title = update.effective_chat.title or "Private Chat"
-    await update.message.reply_text(f"🆔 Chat ID: `{chat_id}`\nTitle: {chat_title}", parse_mode='Markdown')
+    chat = update.effective_chat
+    chat_id = chat.id
+    chat_title = chat.title or chat.username or "Private Chat"
+    
+    # لاگ کردن در کنسول برای دیباگ در رندر
+    print(f"--- GET ID REQUEST ---")
+    print(f"Chat ID: {chat_id}")
+    print(f"Title: {chat_title}")
+    
+    await update.message.reply_text(
+        f"🆔 **Chat ID:** `{chat_id}`\n"
+        f"📛 **Title:** {chat_title}\n\n"
+        f"⚠️ این عدد `{chat_id}` را کپی کنید و در خط 38 کد به جای `ADMIN_GROUP_ID` قرار دهید.",
+        parse_mode='Markdown'
+    )
 
 # ---------------------------------------------------------------------------
 # هندلرهای شروع و ثبت نام
@@ -521,6 +533,8 @@ if __name__ == '__main__':
 
     # اضافه کردن دستور دریافت آیدی گروه (خارج از ConversationHandler برای دسترسی راحت)
     app_bot.add_handler(CommandHandler('getid', get_chat_id))
+    # هندلر متنی برای مواقعی که اسلش کار نمی‌کند (کلمه "id" یا "آیدی" یا "getid")
+    app_bot.add_handler(MessageHandler(filters.Regex(r'(?i)^(id|آیدی|getid)$'), get_chat_id))
 
     conv_handler = ConversationHandler(
         entry_points=[
