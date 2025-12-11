@@ -32,11 +32,10 @@ BOT_TOKEN = "8582244459:AAEzfJr0b699OTJ9x4DS00bdG6CTFxIXDkA"
 ADMIN_PASSWORD = "12345@Parstradecommunity"
 CHANNEL_USERNAME = "@ParsTradeCommunity"  # کانال برای عضویت اجباری
 
-# آیدی عددی گروه ادمین (باید عدد باشد، مثلا -100123456789)
-# چون شما لینک خصوصی دادید، باید آیدی عددی آن را پیدا کنید و اینجا بگذارید.
-# فعلاً یک متغیر میگذارم که باید جایگزین کنید.
-# برای پیدا کردن آیدی گروه، ربات @userinfobot را در گروه اد کنید.
-ADMIN_GROUP_ID = -1001234567890 # <--- این را حتما با آیدی واقعی گروه عوض کنید
+# ⚠️⚠️ مهم: این آیدی را باید با آیدی واقعی گروه عوض کنید ⚠️⚠️
+# راهنما: بعد از اجرای ربات، آن را در گروه اد کنید و دستور /getid را در گروه بفرستید.
+# عددی که ربات می‌دهد را اینجا جایگزین کنید.
+ADMIN_GROUP_ID = -1001234567890 
 
 # وضعیت‌های مکالمه
 (
@@ -167,6 +166,12 @@ async def check_membership(user_id, context: ContextTypes.DEFAULT_TYPE):
         logging.error("Bot is not admin in the channel or channel invalid.")
         return True # موقتا اجازه می‌دهد تا باگ ندهد
 
+async def get_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """دستوری برای دریافت آیدی گروه جهت تنظیمات"""
+    chat_id = update.effective_chat.id
+    chat_title = update.effective_chat.title or "Private Chat"
+    await update.message.reply_text(f"🆔 Chat ID: `{chat_id}`\nTitle: {chat_title}", parse_mode='Markdown')
+
 # ---------------------------------------------------------------------------
 # هندلرهای شروع و ثبت نام
 # ---------------------------------------------------------------------------
@@ -265,7 +270,6 @@ async def get_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ref_id:
         try:
             # دکمه‌های تایید و رد
-            # فرمت دیتا: action_referrerID_newUserID
             kb = [
                 [
                     InlineKeyboardButton("تایید ✅", callback_data=f"confirm_{ref_id}_{user_id}"),
@@ -303,7 +307,6 @@ async def referral_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action == "confirm":
         increment_referral(ref_id)
         new_text = f"✅ رفرال تایید شد.\nامتیاز به کاربر {ref_id} اضافه گردید."
-        # ارسال پیام به معرف (اختیاری)
         try:
             await context.bot.send_message(ref_id, "✅ یکی از دعوت‌های شما توسط ادمین تایید شد و امتیاز گرفتید!")
         except:
@@ -374,9 +377,9 @@ async def support_receive_message(update: Update, context: ContextTypes.DEFAULT_
             chat_id=ADMIN_GROUP_ID,
             text=f"📩 **پیام پشتیبانی**\nاز: {user.first_name} (ID: {user.id})\n\n{msg}"
         )
-        await update.message.reply_text("✅ پیام ارسال شد.")
-    except:
-        await update.message.reply_text("❌ خطا در ارسال (شاید ربات در گروه ادمین نیست).")
+        await update.message.reply_text("✅ پیام شما برای پشتیبانی ارسال شد.")
+    except Exception as e:
+        await update.message.reply_text(f"❌ خطا در ارسال به گروه پشتیبانی.\nمطمئن شوید ربات در گروه ادمین است و آیدی گروه درست تنظیم شده.\n\nخطا: {e}")
     
     await show_main_menu(update, context)
     return MAIN_MENU
@@ -516,6 +519,9 @@ if __name__ == '__main__':
     if app_bot.job_queue:
         app_bot.job_queue.run_daily(nightly_report, time=datetime.time(hour=22, minute=0, tzinfo=pytz.utc))
 
+    # اضافه کردن دستور دریافت آیدی گروه (خارج از ConversationHandler برای دسترسی راحت)
+    app_bot.add_handler(CommandHandler('getid', get_chat_id))
+
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler('start', start),
@@ -532,6 +538,8 @@ if __name__ == '__main__':
             
             MAIN_MENU: [
                 MessageHandler(filters.Regex('^(📊 آمار کامل کاربران|❌ حذف کاربر|📢 پیام همگانی|🔙 خروج از پنل)$'), admin_handler),
+                # اینجا دستور ادمین را اضافه کردیم تا در منوی اصلی کار کند
+                CommandHandler('admin', admin_command),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, menu_handler)
             ],
             
