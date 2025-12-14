@@ -4,6 +4,8 @@ import datetime
 import pytz
 import os
 import time
+import signal
+import sys
 from threading import Thread
 from flask import Flask
 from telegram import (
@@ -31,11 +33,9 @@ from telegram.error import BadRequest, Conflict, NetworkError
 # ---------------------------------------------------------------------------
 BOT_TOKEN = "8582244459:AAEzfJr0b699OTJ9x4DS00bdG6CTFxIXDkA"
 ADMIN_PASSWORD = "12345@Parstradecommunity"
-CHANNEL_USERNAME = "@ParsTradeCommunity"  # کانال برای عضویت اجباری
+CHANNEL_USERNAME = "@ParsTradeCommunity" 
 
-# ⚠️⚠️ مهم: این آیدی را باید با آیدی واقعی گروه عوض کنید ⚠️⚠️
-# راهنما: بعد از اجرای ربات، آن را در گروه اد کنید و دستور /getid را در گروه بفرستید.
-# عددی که ربات می‌دهد را اینجا جایگزین کنید.
+# ⚠️ آیدی عددی گروه ادمین را اینجا بگذارید (از دستور /getid استفاده کنید)
 ADMIN_GROUP_ID = -1001234567890 
 
 # وضعیت‌های مکالمه
@@ -68,12 +68,16 @@ def home():
     return "I'm alive! Pars Trade Bot is running."
 
 def run_flask():
-    # دریافت پورت از متغیرهای محیطی رندر یا پیش‌فرض 8080
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
+    # دریافت پورت از متغیرهای محیطی رندر یا پیش‌فرض 10000
+    port = int(os.environ.get("PORT", 10000))
+    try:
+        app.run(host='0.0.0.0', port=port)
+    except:
+        pass
 
 def keep_alive():
     t = Thread(target=run_flask)
+    t.daemon = True
     t.start()
 
 # ---------------------------------------------------------------------------
@@ -156,28 +160,20 @@ def delete_user_db(user_id):
 # توابع کمکی
 # ---------------------------------------------------------------------------
 async def check_membership(user_id, context: ContextTypes.DEFAULT_TYPE):
-    """بررسی عضویت کاربر در کانال"""
     try:
         member = await context.bot.get_chat_member(chat_id=CHANNEL_USERNAME, user_id=user_id)
         if member.status in ['left', 'kicked']:
             return False
         return True
     except BadRequest:
-        # اگر ربات در کانال ادمین نباشد یا کانال وجود نداشته باشد
         logging.error("Bot is not admin in the channel or channel invalid.")
-        return True # موقتا اجازه می‌دهد تا باگ ندهد
+        return True 
 
 async def get_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """دستوری برای دریافت آیدی گروه جهت تنظیمات"""
     chat = update.effective_chat
     chat_id = chat.id
     chat_title = chat.title or chat.username or "Private Chat"
-    
-    # لاگ کردن در کنسول برای دیباگ در رندر
-    print(f"--- GET ID REQUEST ---")
-    print(f"Chat ID: {chat_id}")
-    print(f"Title: {chat_title}")
-    
+    print(f"--- GET ID REQUEST --- Chat ID: {chat_id}")
     await update.message.reply_text(
         f"🆔 **Chat ID:** `{chat_id}`\n"
         f"📛 **Title:** {chat_title}\n\n"
@@ -186,15 +182,12 @@ async def get_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ---------------------------------------------------------------------------
-# هندلرهای شروع و ثبت نام
+# هندلرها
 # ---------------------------------------------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    
-    # بررسی عضویت در کانال
     if not await check_membership(user_id, context):
         keyboard = [[InlineKeyboardButton("عضویت در کانال 📢", url=f"https://t.me/{CHANNEL_USERNAME.replace('@', '')}")]]
-        # دکمه بررسی مجدد
         keyboard.append([InlineKeyboardButton("عضو شدم ✅", callback_data="check_join")])
         await update.message.reply_text(
             f"⛔ برای استفاده از ربات پارس ترید، ابتدا باید در کانال زیر عضو شوید:\n{CHANNEL_USERNAME}",
@@ -206,7 +199,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_main_menu(update, context)
         return MAIN_MENU
 
-    # بررسی رفرال
     args = context.args
     referrer_id = None
     if args:
@@ -216,22 +208,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 referrer_id = potential_referrer
         except ValueError:
             pass
-    
     context.user_data['referrer_id'] = referrer_id
     
     await update.message.reply_text(
-        "👋 سلام! به کامیونیتی **پارس ترید** خوش آمدید.\n\n"
-        "برای استفاده از خدمات بات، لطفاً ثبت نام کنید.\n"
-        "🔹 نام خود را وارد کنید:"
+        "👋 سلام! به کامیونیتی **پارس ترید** خوش آمدید.\n"
+        "برای ثبت نام، نام خود را وارد کنید:"
     )
     return GET_NAME
 
 async def join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    user_id = query.from_user.id
-    
-    if await check_membership(user_id, context):
+    if await check_membership(query.from_user.id, context):
         await query.message.delete()
         await query.message.chat.send_message("✅ عضویت تایید شد. مجدد /start را بزنید.")
     else:
@@ -252,51 +240,30 @@ async def get_age(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ لطفاً سن را به عدد وارد کنید.")
         return GET_AGE
     context.user_data['age'] = int(update.message.text)
-    
     kb = [[KeyboardButton("📱 ارسال شماره تلفن", request_contact=True)]]
-    await update.message.reply_text(
-        "📞 شماره موبایل خود را ارسال کنید:",
-        reply_markup=ReplyKeyboardMarkup(kb, one_time_keyboard=True, resize_keyboard=True)
-    )
+    await update.message.reply_text("📞 شماره موبایل خود را ارسال کنید:", reply_markup=ReplyKeyboardMarkup(kb, one_time_keyboard=True, resize_keyboard=True))
     return GET_PHONE
 
 async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.contact:
-        context.user_data['phone'] = update.message.contact.phone_number
-    else:
-        context.user_data['phone'] = update.message.text
+    context.user_data['phone'] = update.message.contact.phone_number if update.message.contact else update.message.text
     await update.message.reply_text("📧 ایمیل خود را وارد کنید:", reply_markup=ReplyKeyboardRemove())
     return GET_EMAIL
 
 async def get_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['email'] = update.message.text
     context.user_data['id'] = update.effective_user.id
-    
-    # ذخیره در دیتابیس
     add_user_db(context.user_data)
     
-    # بررسی و ارسال گزارش رفرال به گروه ادمین
     ref_id = context.user_data.get('referrer_id')
     user_id = context.user_data['id']
     name = f"{context.user_data['first_name']} {context.user_data['last_name']}"
     
     if ref_id:
         try:
-            # دکمه‌های تایید و رد
-            kb = [
-                [
-                    InlineKeyboardButton("تایید ✅", callback_data=f"confirm_{ref_id}_{user_id}"),
-                    InlineKeyboardButton("رد ❌", callback_data=f"reject_{ref_id}_{user_id}")
-                ]
-            ]
-            
+            kb = [[InlineKeyboardButton("تایید ✅", callback_data=f"confirm_{ref_id}_{user_id}"), InlineKeyboardButton("رد ❌", callback_data=f"reject_{ref_id}_{user_id}")]]
             await context.bot.send_message(
                 chat_id=ADMIN_GROUP_ID,
-                text=f"🚨 **رفرال جدید نیاز به تایید**\n\n"
-                     f"👤 کاربر جدید: {name}\n"
-                     f"🆔 آیدی: {user_id}\n"
-                     f"📞 شماره: {context.user_data['phone']}\n\n"
-                     f"🔗 دعوت شده توسط: {ref_id}",
+                text=f"🚨 **رفرال جدید**\n👤: {name}\n🆔: {user_id}\n📞: {context.user_data['phone']}\n🔗 دعوت کننده: {ref_id}",
                 reply_markup=InlineKeyboardMarkup(kb)
             )
         except Exception as e:
@@ -306,47 +273,30 @@ async def get_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await show_main_menu(update, context)
     return MAIN_MENU
 
-# ---------------------------------------------------------------------------
-# مدیریت تایید رفرال (Callback)
-# ---------------------------------------------------------------------------
 async def referral_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data.split('_')
-    action = data[0]
-    ref_id = int(data[1])
-    new_user_id = int(data[2])
+    action, ref_id, new_user_id = data[0], int(data[1]), int(data[2])
     
     if action == "confirm":
         increment_referral(ref_id)
-        new_text = f"✅ رفرال تایید شد.\nامتیاز به کاربر {ref_id} اضافه گردید."
+        new_text = f"✅ رفرال تایید شد (معرف: {ref_id})"
         try:
-            await context.bot.send_message(ref_id, "✅ یکی از دعوت‌های شما توسط ادمین تایید شد و امتیاز گرفتید!")
-        except:
-            pass
+            await context.bot.send_message(ref_id, "✅ دعوت شما تایید شد!")
+        except: pass
     else:
-        new_text = f"❌ رفرال رد شد.\nکاربر {new_user_id} فیک یا نامعتبر تشخیص داده شد."
+        new_text = f"❌ رفرال رد شد (کاربر: {new_user_id})"
         
     await query.edit_message_text(text=new_text, reply_markup=None)
 
-# ---------------------------------------------------------------------------
-# منوی اصلی
-# ---------------------------------------------------------------------------
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    buttons = [
-        ["🎁 مسابقه رفرال", "👤 پروفایل من"],
-        ["📞 پشتیبانی"]
-    ]
-    await update.message.reply_text(
-        "منوی اصلی پارس ترید:",
-        reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True)
-    )
+    buttons = [["🎁 مسابقه رفرال", "👤 پروفایل من"], ["📞 پشتیبانی"]]
+    await update.message.reply_text("منوی اصلی:", reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True))
 
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     user_id = update.effective_user.id
-    
-    # چک کردن مجدد عضویت
     if not await check_membership(user_id, context):
         await start(update, context)
         return ConversationHandler.END
@@ -354,218 +304,132 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "🎁 مسابقه رفرال":
         user = get_user(user_id)
         ref_count = user[6] if user else 0
-        bot_username = context.bot.username
-        ref_link = f"https://t.me/{bot_username}?start={user_id}"
-        
-        await update.message.reply_text(
-            f"🏆 **مسابقه رفرال پارس ترید**\n\n"
-            f"تعداد دعوت‌های تایید شده: {ref_count} نفر\n\n"
-            f"🔗 لینک اختصاصی شما:\n{ref_link}\n\n"
-            "دوستان خود را دعوت کنید. پس از تایید ادمین، امتیاز شما ثبت می‌شود."
-        )
-        
+        ref_link = f"https://t.me/{context.bot.username}?start={user_id}"
+        await update.message.reply_text(f"🏆 **مسابقه رفرال**\nتعداد دعوت: {ref_count}\n🔗 لینک شما:\n{ref_link}")
     elif text == "👤 پروفایل من":
         user = get_user(user_id)
-        if user:
-            await update.message.reply_text(
-                f"👤 **پروفایل**\n"
-                f"نام: {user[1]} {user[2]}\n"
-                f"سن: {user[3]}\n"
-                f"شماره: {user[4]}\n"
-                f"ایمیل: {user[5]}"
-            )
-            
+        if user: await update.message.reply_text(f"👤 نام: {user[1]} {user[2]}\nسن: {user[3]}\nشماره: {user[4]}")
     elif text == "📞 پشتیبانی":
-        await update.message.reply_text("💬 پیام خود را بنویسید (لغو: /cancel):")
+        await update.message.reply_text("💬 پیام خود را بنویسید:")
         return SUPPORT_Handler
-            
     return MAIN_MENU
 
 async def support_receive_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message.text
     user = update.effective_user
-    # ارسال به گروه ادمین
     try:
-        await context.bot.send_message(
-            chat_id=ADMIN_GROUP_ID,
-            text=f"📩 **پیام پشتیبانی**\nاز: {user.first_name} (ID: {user.id})\n\n{msg}"
-        )
-        await update.message.reply_text("✅ پیام شما برای پشتیبانی ارسال شد.")
-    except Exception as e:
-        await update.message.reply_text(f"❌ خطا در ارسال به گروه پشتیبانی.\nمطمئن شوید ربات در گروه ادمین است و آیدی گروه درست تنظیم شده.\n\nخطا: {e}")
-    
+        await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"📩 **پشتیبانی**\nاز: {user.first_name} ({user.id})\n\n{msg}")
+        await update.message.reply_text("✅ ارسال شد.")
+    except:
+        await update.message.reply_text("❌ خطا در ارسال.")
     await show_main_menu(update, context)
     return MAIN_MENU
 
-# ---------------------------------------------------------------------------
-# پنل ادمین (/admin)
-# ---------------------------------------------------------------------------
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔑 رمز عبور ادمین را وارد کنید:", reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text("🔑 رمز ادمین:", reply_markup=ReplyKeyboardRemove())
     return GET_ADMIN_PASS
 
 async def verify_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text == ADMIN_PASSWORD:
         context.user_data['is_admin'] = True
         await show_admin_panel(update, context)
-        return MAIN_MENU # هندلر ادمین روی MAIN_MENU سوار است
+        return MAIN_MENU
     else:
-        await update.message.reply_text("❌ رمز اشتباه است.")
+        await update.message.reply_text("❌ رمز اشتباه.")
         await show_main_menu(update, context)
         return MAIN_MENU
 
 async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    btns = [
-        ["📊 آمار کامل کاربران", "❌ حذف کاربر"],
-        ["📢 پیام همگانی", "🔙 خروج از پنل"]
-    ]
-    await update.message.reply_text(
-        "🔧 **پنل مدیریت پارس ترید**",
-        reply_markup=ReplyKeyboardMarkup(btns, resize_keyboard=True)
-    )
+    btns = [["📊 آمار", "❌ حذف کاربر"], ["📢 پیام همگانی", "🔙 خروج"]]
+    await update.message.reply_text("🔧 پنل ادمین", reply_markup=ReplyKeyboardMarkup(btns, resize_keyboard=True))
 
 async def admin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get('is_admin'):
-        return await menu_handler(update, context)
-        
+    if not context.user_data.get('is_admin'): return await menu_handler(update, context)
     text = update.message.text
-    
-    if text == "📊 آمار کامل کاربران":
+    if text == "📊 آمار":
         users = get_all_users()
-        if not users:
-            await update.message.reply_text("لیست خالی است.")
-            return MAIN_MENU
-            
-        report = "📋 **لیست کاربران:**\n\n"
-        # فرمت: ID | Name | Phone | Age
-        for u in users:
-            line = f"🆔 `{u[0]}` | {u[1]} {u[2]} | 📞 {u[4]} | 🎂 {u[3]}\n"
-            if len(report + line) > 4000: # جلوگیری از ارور محدودیت طول پیام
-                await update.message.reply_text(report, parse_mode='Markdown')
-                report = ""
-            report += line
-            
-        if report:
-            await update.message.reply_text(report, parse_mode='Markdown')
-            
+        report = "📋 **کاربران:**\n" + "\n".join([f"🆔 `{u[0]}` | {u[1]}" for u in users])
+        if len(report) > 4000: report = report[:4000] + "..."
+        await update.message.reply_text(report or "خالی", parse_mode='Markdown')
     elif text == "❌ حذف کاربر":
-        await update.message.reply_text("🆔 آیدی عددی کاربر مورد نظر را برای حذف وارد کنید:")
+        await update.message.reply_text("🆔 آیدی کاربر:")
         return ADMIN_DELETE_USER
-        
     elif text == "📢 پیام همگانی":
-        await update.message.reply_text("متن پیام را وارد کنید:")
+        await update.message.reply_text("متن پیام:")
         return ADMIN_BROADCAST
-        
-    elif text == "🔙 خروج از پنل":
+    elif text == "🔙 خروج":
         context.user_data['is_admin'] = False
         await show_main_menu(update, context)
-        
     return MAIN_MENU
 
 async def delete_user_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        target_id = int(update.message.text)
-        if delete_user_db(target_id):
-            await update.message.reply_text(f"✅ کاربر {target_id} با موفقیت حذف شد.")
-        else:
-            await update.message.reply_text("❌ کاربر یافت نشد.")
-    except ValueError:
-        await update.message.reply_text("❌ لطفاً فقط عدد وارد کنید.")
-    
+        if delete_user_db(int(update.message.text)): await update.message.reply_text("✅ حذف شد.")
+        else: await update.message.reply_text("❌ یافت نشد.")
+    except: await update.message.reply_text("❌ فقط عدد.")
     await show_admin_panel(update, context)
     return MAIN_MENU
 
 async def broadcast_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message.text
-    users = get_all_users()
     count = 0
-    await update.message.reply_text("⏳ در حال ارسال...")
-    for u in users:
+    await update.message.reply_text("⏳ ارسال...")
+    for u in get_all_users():
         try:
             await context.bot.send_message(u[0], msg)
             count += 1
-        except:
-            pass
-    await update.message.reply_text(f"✅ ارسال شد به {count} نفر.")
+        except: pass
+    await update.message.reply_text(f"✅ به {count} نفر ارسال شد.")
     await show_admin_panel(update, context)
     return MAIN_MENU
 
-# ---------------------------------------------------------------------------
-# گزارش شبانه (JobQueue)
-# ---------------------------------------------------------------------------
 async def nightly_report(context: ContextTypes.DEFAULT_TYPE):
-    """ارسال آمار کلی به گروه ادمین هر شب"""
     users = get_all_users()
-    total_users = len(users)
-    # محاسبه کل رفرال‌ها
-    total_refs = sum([u[6] for u in users])
-    
-    msg = (
-        "🌙 **گزارش شبانه پارس ترید**\n\n"
-        f"👥 کل کاربران: {total_users}\n"
-        f"🤝 کل دعوت‌های موفق: {total_refs}\n"
-        f"📅 تاریخ: {datetime.datetime.now().strftime('%Y-%m-%d')}"
-    )
-    
-    try:
-        await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=msg)
-    except Exception as e:
-        logging.error(f"Nightly report failed: {e}")
+    msg = f"🌙 **گزارش شبانه**\n👥 کل: {len(users)}\n📅 {datetime.datetime.now().strftime('%Y-%m-%d')}"
+    try: await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=msg)
+    except Exception as e: logging.error(f"Report error: {e}")
 
-# ---------------------------------------------------------------------------
-# مدیریت خطاها
-# ---------------------------------------------------------------------------
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logging.error(msg="Exception while handling an update:", exc_info=context.error)
+    logging.error(msg="Exception:", exc_info=context.error)
 
-# ---------------------------------------------------------------------------
-# اجرا
-# ---------------------------------------------------------------------------
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await show_main_menu(update, context)
     return MAIN_MENU
 
+# ---------------------------------------------------------------------------
+# اجرای اصلی با تأخیر برای جلوگیری از کانفلیکت
+# ---------------------------------------------------------------------------
 if __name__ == '__main__':
-    # روشن کردن سرور وب برای زنده ماندن در رندر
-    keep_alive()
+    # این بخش حیاتی است: ۱۵ ثانیه صبر می‌کند تا نسخه قبلی در رندر بمیرد
+    print("⏳ Waiting 15s for the old instance to shut down...")
+    time.sleep(15)
     
+    keep_alive()
     init_db()
     
     app_bot = ApplicationBuilder().token(BOT_TOKEN).build()
-    
-    # اضافه کردن هندلر خطا
     app_bot.add_error_handler(error_handler)
     
-    # تنظیم جاب برای گزارش شبانه (هر 24 ساعت - مثلا ساعت 22 به وقت سرور)
-    # تذکر: ساعت سرور رندر UTC است.
     if app_bot.job_queue:
         app_bot.job_queue.run_daily(nightly_report, time=datetime.time(hour=22, minute=0, tzinfo=pytz.utc))
 
-    # اضافه کردن دستور دریافت آیدی گروه (خارج از ConversationHandler برای دسترسی راحت)
     app_bot.add_handler(CommandHandler('getid', get_chat_id))
-    # هندلر متنی برای مواقعی که اسلش کار نمی‌کند (کلمه "id" یا "آیدی" یا "getid")
     app_bot.add_handler(MessageHandler(filters.Regex(r'(?i)^(id|آیدی|getid)$'), get_chat_id))
 
     conv_handler = ConversationHandler(
-        entry_points=[
-            CommandHandler('start', start),
-            CommandHandler('admin', admin_command)
-        ],
+        entry_points=[CommandHandler('start', start), CommandHandler('admin', admin_command)],
         states={
             GET_NAME: [MessageHandler(filters.TEXT, get_name)],
             GET_SURNAME: [MessageHandler(filters.TEXT, get_surname)],
             GET_AGE: [MessageHandler(filters.TEXT, get_age)],
             GET_PHONE: [MessageHandler(filters.CONTACT | filters.TEXT, get_phone)],
             GET_EMAIL: [MessageHandler(filters.TEXT, get_email)],
-            
             GET_ADMIN_PASS: [MessageHandler(filters.TEXT, verify_admin)],
-            
             MAIN_MENU: [
-                MessageHandler(filters.Regex('^(📊 آمار کامل کاربران|❌ حذف کاربر|📢 پیام همگانی|🔙 خروج از پنل)$'), admin_handler),
+                MessageHandler(filters.Regex('^(📊 آمار|❌ حذف کاربر|📢 پیام همگانی|🔙 خروج)$'), admin_handler),
                 CommandHandler('admin', admin_command),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, menu_handler)
             ],
-            
             SUPPORT_Handler: [MessageHandler(filters.TEXT & ~filters.COMMAND, support_receive_message)],
             ADMIN_BROADCAST: [MessageHandler(filters.TEXT & ~filters.COMMAND, broadcast_handler)],
             ADMIN_DELETE_USER: [MessageHandler(filters.TEXT & ~filters.COMMAND, delete_user_handler)],
@@ -577,22 +441,6 @@ if __name__ == '__main__':
     app_bot.add_handler(CallbackQueryHandler(join_callback, pattern='^check_join$'))
     app_bot.add_handler(CallbackQueryHandler(referral_action, pattern='^(confirm|reject)_'))
     
-    print("Bot is starting with Auto-Retry for Conflicts...")
-    
-    # حلقه برای تلاش مجدد در صورت ارور Conflict
-    while True:
-        try:
-            # drop_pending_updates=True باعث میشود اگر پیام گیر کرده‌ای از قبل مانده بود، باعث تداخل نشود
-            app_bot.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
-            # اگر برنامه عادی بسته شد، حلقه را بشکن
-            break
-        except Conflict:
-            logging.error("Conflict Error: Another instance is running. Retrying in 5 seconds...")
-            print("⚠️ تداخل! نسخه قبلی هنوز بسته نشده. تلاش مجدد در 5 ثانیه...")
-            time.sleep(5)
-        except NetworkError:
-            logging.error("Network Error. Retrying in 5 seconds...")
-            time.sleep(5)
-        except Exception as e:
-            logging.error(f"Unexpected Error: {e}")
-            time.sleep(10)
+    print("🚀 Bot is starting polling...")
+    # drop_pending_updates=True پیام‌های قدیمی را نادیده می‌گیرد تا سریع وصل شود
+    app_bot.run_polling(drop_pending_updates=True)
