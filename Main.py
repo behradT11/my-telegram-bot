@@ -1,9 +1,8 @@
-
-
 import logging
 import sqlite3
 import asyncio
 import threading
+import os
 from datetime import datetime
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
@@ -17,22 +16,25 @@ from telegram.ext import (
     ConversationHandler,
     filters,
 )
+from telegram.error import BadRequest, Forbidden
 
 # --- تنظیمات اصلی ---
 TOKEN = "8582244459:AAEzfJr0b699OTJ9x4DS00bdG6CTFxIXDkA"
-OWNER_ID = 6735282633 # آیدی عددی خودتان را اینجا بگذارید (برای ساخت ادمین جدید)
+OWNER_ID = 6735282633  # آیدی عددی خودتان
 CHANNEL_ID = "@ParsTradeCommunity"
 GROUP_ID = "@ParsTradeGP"
 
-# --- سرور Flask برای زنده ماندن ---
+# --- سرور Flask (اصلاح شده برای Render) ---
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Pars Trade Bot is Running..."
+    return "Bot is running..."
 
 def run_flask():
-    app.run(host="0.0.0.0", port=8080)
+    # دریافت پورت از محیط رندر یا استفاده از 10000 به عنوان پیش‌فرض
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
 
 def keep_alive():
     t = threading.Thread(target=run_flask)
@@ -56,10 +58,8 @@ logger = logging.getLogger(__name__)
 
 # --- دیتابیس ---
 def init_db():
-    conn = sqlite3.connect("parstrade_v3.db")
+    conn = sqlite3.connect("parstrade_v4.db")
     c = conn.cursor()
-    
-    # جدول کاربران
     c.execute('''CREATE TABLE IF NOT EXISTS users (
                  user_id INTEGER PRIMARY KEY,
                  full_name TEXT,
@@ -69,14 +69,10 @@ def init_db():
                  is_admin INTEGER DEFAULT 0,
                  join_date TEXT
                  )''')
-                 
-    # جدول متن‌های پویا
     c.execute('''CREATE TABLE IF NOT EXISTS dynamic_texts (
                  key TEXT PRIMARY KEY,
                  content TEXT
                  )''')
-                 
-    # جدول دوره‌ها
     c.execute('''CREATE TABLE IF NOT EXISTS courses (
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
                  day INTEGER,
@@ -86,8 +82,6 @@ def init_db():
                  file_id TEXT,
                  caption TEXT
                  )''')
-                 
-    # جدول لایو
     c.execute('''CREATE TABLE IF NOT EXISTS lives (
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
                  title TEXT,
@@ -96,22 +90,20 @@ def init_db():
                  date_recorded TEXT,
                  is_active INTEGER DEFAULT 0
                  )''')
-
-    # متن‌های پیش‌فرض
+    
     defaults = {
         "welcome": "درود {name} عزیز، به کامیونیتی بزرگ پارس ترید خوش آمدید. 🌹\nاینجا مسیر حرفه‌ای شدن شماست.",
-        "about": "ما در پارس ترید با هدف آموزش اصولی بازارهای مالی...",
-        "support": "برای ارتباط با پشتیبانی به آیدی زیر پیام دهید:\n@AdminID",
+        "about": "ما در پارس ترید با هدف آموزش اصولی بازارهای مالی فعالیت می‌کنیم.",
+        "support": "برای ارتباط با پشتیبانی به آیدی زیر پیام دهید:\n@Behrise",
         "rules": "قوانین استفاده از ربات:\n1. عضویت در کانال الزامی است."
     }
     for k, v in defaults.items():
         c.execute("INSERT OR IGNORE INTO dynamic_texts (key, content) VALUES (?, ?)", (k, v))
-        
     conn.commit()
     conn.close()
 
 def get_db():
-    return sqlite3.connect("parstrade_v3.db")
+    return sqlite3.connect("parstrade_v4.db")
 
 def get_text(key, **kwargs):
     conn = get_db()
@@ -130,43 +122,37 @@ def is_user_admin(user_id):
     conn.close()
     return res and res[0] == 1
 
-# --- بررسی عضویت اجباری ---
+# --- بررسی عضویت (اصلاح شده) ---
 async def check_membership(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     try:
         # بررسی کانال
-        cm_channel = await context.bot.get_chat_member(CHANNEL_ID, user_id)
-        if cm_channel.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED, ChatMemberStatus.RESTRICTED]:
+        cm = await context.bot.get_chat_member(CHANNEL_ID, user_id)
+        if cm.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED, ChatMemberStatus.RESTRICTED]:
             return False
-            
-        # بررسی گروه (اختیاری - اگر نمی‌خواهید گروه اجباری باشد این بخش را کامنت کنید)
-        # cm_group = await context.bot.get_chat_member(GROUP_ID, user_id)
-        # if cm_group.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
-        #     return False
-            
         return True
-    except Exception as e:
-        logger.error(f"Membership check error: {e}")
-        # اگر ربات در کانال ادمین نباشد خطا می‌دهد، پس موقتاً اجازه می‌دهیم
+    except BadRequest as e:
+        logger.error(f"Error checking channel membership: {e} - Make sure bot is ADMIN in channel!")
+        # اگر بات ادمین نباشد خطا میدهد. برای اینکه بات گیر نکند موقتا True میدهیم
+        # اما در لاگ هشدار دادیم.
         return True 
+    except Exception as e:
+        logger.error(f"General error in check_membership: {e}")
+        return True
 
 async def force_join_message(update: Update):
-    """پیام قفل عضویت"""
     kb = [
         [InlineKeyboardButton("📢 عضویت در کانال", url=f"https://t.me/{CHANNEL_ID.replace('@','')}")]
-        # ,[InlineKeyboardButton("👥 عضویت در گروه", url=f"https://t.me/{GROUP_ID.replace('@','')}")
     ]
-    # دکمه بررسی عضویت
     kb.append([InlineKeyboardButton("✅ عضو شدم", callback_data="check_join")])
-    
-    msg_text = "⛔️ **دسترسی محدود است!**\n\nبرای استفاده از امکانات بات، ابتدا باید عضو کانال ما شوید.\nپس از عضویت دکمه «عضو شدم» را بزنید."
+    msg = "⛔️ **دسترسی محدود است!**\n\nبرای استفاده از امکانات بات، ابتدا باید عضو کانال شوید."
     
     if update.callback_query:
-        await update.callback_query.message.edit_text(msg_text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.MARKDOWN)
+        await update.callback_query.message.edit_text(msg, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.MARKDOWN)
     else:
-        await update.message.reply_text(msg_text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.MARKDOWN)
 
-# --- منوی اصلی (Reply Keyboard) ---
+# --- منوی اصلی ---
 def main_menu_keyboard(user_id):
     buttons = [
         ["🎓 آموزش (VIP)", "🔴 لایو ترید"],
@@ -175,28 +161,23 @@ def main_menu_keyboard(user_id):
     ]
     if is_user_admin(user_id):
         buttons.append(["⚙️ پنل مدیریت"])
-    
-    return ReplyKeyboardMarkup(buttons, resize_keyboard=True, one_time_keyboard=False)
+    return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
-# --- هندلر استارت ---
+# --- هندلرها ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     args = context.args
     conn = get_db()
     
-    # ثبت کاربر در دیتابیس
     exist = conn.execute("SELECT user_id FROM users WHERE user_id=?", (user.id,)).fetchone()
     if not exist:
         ref_id = int(args[0]) if (args and args[0].isdigit() and int(args[0]) != user.id) else None
         conn.execute("INSERT INTO users (user_id, full_name, username, referrer_id, join_date) VALUES (?, ?, ?, ?, ?)",
                      (user.id, user.full_name, user.username, ref_id, datetime.now().strftime("%Y-%m-%d")))
-        
-        # اگر معرف داشت، چک کنیم معرف ادمین نباشد (یا منطق خاصی دارید)
         if ref_id:
-            # فعلاً تایید اولیه را انجام نمی‌دهیم تا زمانی که مطمئن شویم کاربر در کانال مانده
-            conn.execute("UPDATE users SET referrals_confirmed = referrals_confirmed + 1 WHERE user_id=?", (ref_id,))
+            # اطلاع رسانی به معرف ولی تایید نمیکنیم (ادمین باید تایید کند یا سیستم خودکار بعدا)
             try:
-                await context.bot.send_message(ref_id, f"🎉 کاربر {user.full_name} با لینک شما وارد شد.")
+                await context.bot.send_message(ref_id, f"🎉 کاربر {user.full_name} با لینک شما وارد شد (در انتظار تایید).")
             except: pass
         conn.commit()
     conn.close()
@@ -205,15 +186,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await force_join_message(update)
         return
 
-    welcome_text = get_text("welcome", name=user.first_name)
-    await update.message.reply_text(welcome_text, reply_markup=main_menu_keyboard(user.id))
+    txt = get_text("welcome", name=user.first_name)
+    await update.message.reply_text(txt, reply_markup=main_menu_keyboard(user.id))
 
-# --- هندلر پیام‌های متنی (منوی اصلی) ---
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     user = update.effective_user
     
-    # چک کردن عضویت در هر پیام
     if not await check_membership(update, context):
         await force_join_message(update)
         return
@@ -224,189 +203,137 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         bot_username = context.bot.username
         link = f"https://t.me/{bot_username}?start={user.id}"
-        
-        msg = (
-            f"👤 **پروفایل کاربری**\n"
-            f"➖➖➖➖➖➖➖\n"
-            f"📛 نام: {user.full_name}\n"
-            f"🆔 شناسه: `{user.id}`\n"
-            f"📅 تاریخ عضویت: {data[1]}\n"
-            f"👥 **زیرمجموعه تایید شده:** {data[0]} نفر\n"
-            f"➖➖➖➖➖➖➖\n"
-            f"🔗 **لینک دعوت اختصاصی شما:**\n`{link}`\n\n"
-            f"⚠️ نکته: اگر زیرمجموعه شما از کانال خارج شود، امتیاز آن کسر نخواهد شد اما سیستم هوشمند ما کاربران فیک را شناسایی می‌کند."
-        )
+        msg = (f"👤 **پروفایل کاربری**\n\n🆔 شناسه: `{user.id}`\n👥 **دعوت‌های تایید شده:** {data[0]}\n"
+               f"📅 تاریخ عضویت: {data[1]}\n\n🔗 **لینک دعوت شما:**\n`{link}`")
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
     elif text == "🎓 آموزش (VIP)":
         conn = get_db()
         days = conn.execute("SELECT DISTINCT day FROM courses ORDER BY day").fetchall()
         conn.close()
-        
         if not days:
-            await update.message.reply_text("هنوز آموزشی بارگذاری نشده است.")
+            await update.message.reply_text("هنوز آموزشی نیست.")
             return
-
         kb = []
         row = []
         for d in days:
             row.append(InlineKeyboardButton(f"📅 روز {d[0]}", callback_data=f"day_{d[0]}"))
-            if len(row) == 2:
-                kb.append(row)
-                row = []
+            if len(row)==2: 
+                kb.append(row) 
+                row=[]
         if row: kb.append(row)
-        
-        await update.message.reply_text("🎓 **دوره آموزشی پارس ترید**\n\nلطفاً روز مورد نظر را انتخاب کنید:", reply_markup=InlineKeyboardMarkup(kb))
+        await update.message.reply_text("🎓 دوره آموزشی:", reply_markup=InlineKeyboardMarkup(kb))
 
     elif text == "🔴 لایو ترید":
         conn = get_db()
         active = conn.execute("SELECT title, link FROM lives WHERE is_active=1").fetchone()
         archives = conn.execute("SELECT id, title, date_recorded FROM lives WHERE is_active=0 ORDER BY id DESC LIMIT 5").fetchall()
         conn.close()
-        
-        msg = "🔴 **بخش لایو ترید**\n\n"
+        msg = "🔴 **لایو ترید**\n\n"
         kb = []
-        
         if active:
-            msg += f"🔥 **لایو در حال برگزاری:**\n{active[0]}\nجهت ورود کلیک کنید 👇"
-            kb.append([InlineKeyboardButton("ورود به لایو 🎥", url=active[1])])
-        else:
-            msg += "در حال حاضر لایو زنده‌ای نداریم.\n"
-            
-        msg += "\n🗂 **آرشیو لایوهای گذشته:**"
-        for arc in archives:
-            kb.append([InlineKeyboardButton(f"📼 {arc[1]} ({arc[2]})", callback_data=f"get_live_{arc[0]}")])
-            
-        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(kb))
+            msg += f"🔥 **لایو زنده:** {active[0]}\n"
+            kb.append([InlineKeyboardButton("ورود به لایو", url=active[1])])
+        else: msg += "لایو زنده‌ای نداریم.\n"
+        
+        msg += "\n📂 آرشیو:"
+        for a in archives: kb.append([InlineKeyboardButton(f"🎥 {a[1]}", callback_data=f"glive_{a[0]}")])
+        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.MARKDOWN)
 
     elif text == "🏆 تورنمنت":
-        await update.message.reply_text("🏆 **تورنمنت‌های پارس ترید**\n\nبه زودی لیست مسابقات هیجان‌انگیز در اینجا قرار می‌گیرد...")
+        await update.message.reply_text("🏆 تورنمنت‌ها به زودی...")
 
     elif text == "ℹ️ درباره ما":
         await update.message.reply_text(get_text("about"))
-
     elif text == "📞 پشتیبانی":
         await update.message.reply_text(get_text("support"))
-
     elif text == "⚙️ پنل مدیریت":
-        if is_user_admin(user.id):
-            await admin_panel_start(update, context)
-        else:
-            await update.message.reply_text("⛔️ شما دسترسی مدیریت ندارید.")
+        if is_user_admin(user.id): await admin_panel_start(update, context)
+        else: await update.message.reply_text("دسترسی ندارید.")
 
-# --- کال‌بک هندلر (دکمه‌های شیشه‌ای) ---
-async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    data = query.data
-    user_id = query.from_user.id
+async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    d = q.data
     
-    if data == "check_join":
+    if d == "check_join":
         if await check_membership(update, context):
-            await query.answer("✅ عضویت تایید شد!", show_alert=True)
-            welcome_text = get_text("welcome", name=query.from_user.first_name)
-            await query.message.delete()
-            await query.message.reply_text(welcome_text, reply_markup=main_menu_keyboard(user_id))
-        else:
-            await query.answer("❌ هنوز عضو کانال نشده‌اید.", show_alert=True)
+            await q.answer("✅ تایید شد!")
+            await q.message.delete()
+            await q.message.reply_text(get_text("welcome", name=q.from_user.first_name), reply_markup=main_menu_keyboard(q.from_user.id))
+        else: await q.answer("❌ هنوز عضو نیستید.", show_alert=True)
         return
 
-    # بقیه کال‌بک‌ها نیاز به عضویت دارند
     if not await check_membership(update, context):
-        await query.answer("لطفا ابتدا عضو کانال شوید.", show_alert=True)
+        await q.answer("ابتدا عضو کانال شوید.", show_alert=True)
         return
 
-    if data.startswith("day_"):
-        day = data.split("_")[1]
+    if d.startswith("day_"):
+        day = d.split("_")[1]
         conn = get_db()
         parts = conn.execute("SELECT id, part, req_refs FROM courses WHERE day=? ORDER BY part", (day,)).fetchall()
-        user_refs = conn.execute("SELECT referrals_confirmed FROM users WHERE user_id=?", (user_id,)).fetchone()[0]
+        refs = conn.execute("SELECT referrals_confirmed FROM users WHERE user_id=?", (q.from_user.id,)).fetchone()[0]
         conn.close()
-        
         kb = []
         for p in parts:
-            pid, pnum, req = p
-            if user_refs >= req:
-                kb.append([InlineKeyboardButton(f"✅ قسمت {pnum} (باز)", callback_data=f"get_course_{pid}")])
-            else:
-                kb.append([InlineKeyboardButton(f"🔒 قسمت {pnum} (نیاز به {req} رفرال)", callback_data=f"alert_req_{req}")])
-        
-        await query.message.edit_text(f"📚 **محتوای روز {day}**\n\nوضعیت شما: {user_refs} رفرال", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.MARKDOWN)
+            if refs >= p[2]: kb.append([InlineKeyboardButton(f"✅ قسمت {p[1]}", callback_data=f"gcourse_{p[0]}")])
+            else: kb.append([InlineKeyboardButton(f"🔒 قسمت {p[1]} ({p[2]} رفرال)", callback_data=f"alert_{p[2]}")])
+        await q.message.edit_text(f"📚 روز {day} - وضعیت شما: {refs} رفرال", reply_markup=InlineKeyboardMarkup(kb))
 
-    elif data.startswith("alert_req_"):
-        req = data.split("_")[2]
-        await query.answer(f"برای مشاهده این قسمت باید {req} نفر را به ربات دعوت کنید.", show_alert=True)
+    elif d.startswith("alert_"):
+        await q.answer(f"نیاز به {d.split('_')[1]} رفرال دارید.", show_alert=True)
 
-    elif data.startswith("get_course_"):
-        cid = data.split("_")[2]
+    elif d.startswith("gcourse_"):
+        cid = d.split("_")[1]
         conn = get_db()
         c = conn.execute("SELECT content_type, file_id, caption FROM courses WHERE id=?", (cid,)).fetchone()
         conn.close()
         if c:
-            ctype, fid, cap = c
-            if ctype == 'text': await query.message.reply_text(cap)
-            elif ctype == 'video': await query.message.reply_video(fid, caption=cap)
-            elif ctype == 'photo': await query.message.reply_photo(fid, caption=cap)
-            elif ctype == 'document': await query.message.reply_document(fid, caption=cap)
-        await query.answer()
+            if c[0]=='text': await q.message.reply_text(c[2])
+            elif c[0]=='video': await q.message.reply_video(c[1], caption=c[2])
+            elif c[0]=='photo': await q.message.reply_photo(c[1], caption=c[2])
+            elif c[0]=='document': await q.message.reply_document(c[1], caption=c[2])
+        await q.answer()
 
-    elif data.startswith("get_live_"):
-        lid = data.split("_")[2]
+    elif d.startswith("glive_"):
+        lid = d.split("_")[1]
         conn = get_db()
         l = conn.execute("SELECT file_id, title FROM lives WHERE id=?", (lid,)).fetchone()
         conn.close()
-        if l:
-            await query.message.reply_video(l[0], caption=f"🎥 {l[1]}")
-        await query.answer()
+        if l: await q.message.reply_video(l[0], caption=l[1])
+        await q.answer()
 
-# --- سیستم مدیریت (Conversation) ---
-
+# --- پنل مدیریت ---
 async def admin_panel_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    kb = [
-        ["➕ افزودن آموزش", "🔴 مدیریت لایو"],
-        ["👥 مدیریت کاربران", "👮‍♂️ افزودن ادمین"],
-        ["📝 ویرایش متن‌ها", "📢 پیام همگانی"],
-        ["❌ خروج از پنل"]
-    ]
-    await update.message.reply_text("⚙️ **پنل مدیریت پارس ترید**\nگزینه مورد نظر را انتخاب کنید:", 
-                                    reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
+    kb = [["➕ افزودن آموزش", "🔴 مدیریت لایو"], ["👥 مدیریت کاربر", "👮‍♂️ افزودن ادمین"], ["📝 ویرایش متن", "📢 پیام همگانی"], ["❌ خروج"]]
+    await update.message.reply_text("⚙️ پنل مدیریت:", reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
     return ADMIN_PANEL
 
-async def admin_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    
-    if text == "❌ خروج از پنل":
-        await update.message.reply_text("خروج از حالت مدیریت.", reply_markup=main_menu_keyboard(update.effective_user.id))
+async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    t = update.message.text
+    if t=="❌ خروج":
+        await update.message.reply_text("خروج.", reply_markup=main_menu_keyboard(update.effective_user.id))
         return ConversationHandler.END
-
-    if text == "➕ افزودن آموزش":
-        await update.message.reply_text("شماره روز (مثلا 1):")
+    elif t=="➕ افزودن آموزش":
+        await update.message.reply_text("شماره روز:")
         return ADD_COURSE_DAY
-    
-    elif text == "📝 ویرایش متن‌ها":
-        keys = [["welcome", "about"], ["support", "rules"], ["بازگشت"]]
-        await update.message.reply_text("کدام متن را ویرایش می‌کنید؟\n(welcome: خوش‌آمدگویی)", reply_markup=ReplyKeyboardMarkup(keys, resize_keyboard=True))
-        return EDIT_TEXT_SELECT
-
-    elif text == "👥 مدیریت کاربران":
-        await update.message.reply_text("آیدی عددی کاربر را بفرستید (یا پیامی از او فوروارد کنید):", reply_markup=ReplyKeyboardMarkup([["بازگشت"]], resize_keyboard=True))
+    elif t=="👥 مدیریت کاربر":
+        await update.message.reply_text("آیدی عددی کاربر:")
         return MANAGE_USER_INPUT
-
-    elif text == "🔴 مدیریت لایو":
-        kb = [["تنظیم لینک زنده", "آپلود آرشیو"], ["غیرفعال کردن لایو", "بازگشت"]]
-        await update.message.reply_text("مدیریت لایو:", reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
+    elif t=="🔴 مدیریت لایو":
+        await update.message.reply_text("گزینه:", reply_markup=ReplyKeyboardMarkup([["تنظیم لینک", "آپلود آرشیو"], ["بازگشت"]], resize_keyboard=True))
         return MANAGE_LIVE_MENU
-
-    elif text == "👮‍♂️ افزودن ادمین":
+    elif t=="👮‍♂️ افزودن ادمین":
         if update.effective_user.id != OWNER_ID:
-            await update.message.reply_text("⛔️ فقط مالک اصلی می‌تواند ادمین اضافه کند.")
+            await update.message.reply_text("فقط مالک!")
             return ADMIN_PANEL
-        await update.message.reply_text("آیدی عددی شخصی که می‌خواهید ادمین شود را بفرستید:", reply_markup=ReplyKeyboardMarkup([["بازگشت"]], resize_keyboard=True))
+        await update.message.reply_text("آیدی عددی:")
         return ADD_ADMIN_INPUT
-
-    elif text == "📢 پیام همگانی":
-        await update.message.reply_text("پیام خود را ارسال کنید (متن، عکس، ویدیو):", reply_markup=ReplyKeyboardMarkup([["بازگشت"]], resize_keyboard=True))
+    elif t=="📝 ویرایش متن":
+        await update.message.reply_text("کدام متن (welcome, about, support, rules):")
+        return EDIT_TEXT_SELECT
+    elif t=="📢 پیام همگانی":
+        await update.message.reply_text("پیام را بفرستید:")
         return BROADCAST_MESSAGE
-
     return ADMIN_PANEL
 
 # --- افزودن آموزش ---
@@ -414,220 +341,156 @@ async def add_course_day(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['day'] = update.message.text
     await update.message.reply_text("شماره قسمت:")
     return ADD_COURSE_PART
-
 async def add_course_part(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['part'] = update.message.text
-    await update.message.reply_text("تعداد رفرال مورد نیاز (عدد):")
+    await update.message.reply_text("تعداد رفرال:")
     return ADD_COURSE_REFS
-
 async def add_course_refs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['refs'] = update.message.text
-    await update.message.reply_text("فایل یا متن آموزش را بفرستید:")
+    await update.message.reply_text("فایل/متن:")
     return ADD_COURSE_CONTENT
-
 async def add_course_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ctype = 'text'
-    fid = None
+    type, fid = 'text', None
     cap = update.message.caption or update.message.text or ""
-    
-    if update.message.video: ctype, fid = 'video', update.message.video.file_id
-    elif update.message.photo: ctype, fid = 'photo', update.message.photo[-1].file_id
-    elif update.message.document: ctype, fid = 'document', update.message.document.file_id
-    elif update.message.text: ctype = 'text'
+    if update.message.video: type, fid = 'video', update.message.video.file_id
+    elif update.message.photo: type, fid = 'photo', update.message.photo[-1].file_id
+    elif update.message.document: type, fid = 'document', update.message.document.file_id
     
     conn = get_db()
     conn.execute("INSERT INTO courses (day, part, req_refs, content_type, file_id, caption) VALUES (?,?,?,?,?,?)",
-                 (context.user_data['day'], context.user_data['part'], context.user_data['refs'], ctype, fid, cap))
+                 (context.user_data['day'], context.user_data['part'], context.user_data['refs'], type, fid, cap))
     conn.commit()
     conn.close()
-    await update.message.reply_text("✅ آموزش اضافه شد.")
+    await update.message.reply_text("✅")
     await admin_panel_start(update, context)
     return ADMIN_PANEL
 
-# --- مدیریت کاربر (تایید/رد رفرال) ---
+# --- مدیریت کاربر ---
 async def manage_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.text == "بازگشت": return await admin_panel_start(update, context)
-    
-    uid = update.message.text
-    if not uid.isdigit():
-        await update.message.reply_text("لطفا عدد وارد کنید.")
-        return MANAGE_USER_INPUT
-        
-    context.user_data['target_uid'] = uid
+    if update.message.text=="بازگشت": return await admin_panel_start(update, context)
+    context.user_data['uid'] = update.message.text
     conn = get_db()
-    u = conn.execute("SELECT full_name, referrals_confirmed FROM users WHERE user_id=?", (uid,)).fetchone()
+    u = conn.execute("SELECT full_name, referrals_confirmed FROM users WHERE user_id=?", (update.message.text,)).fetchone()
     conn.close()
-    
     if not u:
-        await update.message.reply_text("کاربر یافت نشد.")
-        return MANAGE_USER_INPUT
-        
-    kb = [["➕ افزایش رفرال (تایید)", "➖ کاهش رفرال (رد)"], ["بازگشت"]]
-    await update.message.reply_text(f"👤 کاربر: {u[0]}\n📊 رفرال فعلی: {u[1]}\n\nعملیات مورد نظر:", reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
-    return MANAGE_USER_ACTION
-
-async def manage_user_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    action = update.message.text
-    if action == "بازگشت": return await admin_panel_start(update, context)
-    
-    uid = context.user_data['target_uid']
-    conn = get_db()
-    if "افزایش" in action:
-        conn.execute("UPDATE users SET referrals_confirmed = referrals_confirmed + 1 WHERE user_id=?", (uid,))
-        msg = "یک رفرال اضافه شد."
-    elif "کاهش" in action:
-        conn.execute("UPDATE users SET referrals_confirmed = MAX(0, referrals_confirmed - 1) WHERE user_id=?", (uid,))
-        msg = "یک رفرال کم شد."
-    conn.commit()
-    conn.close()
-    
-    await update.message.reply_text(f"✅ {msg}")
-    await admin_panel_start(update, context)
-    return ADMIN_PANEL
-
-# --- افزودن ادمین ---
-async def add_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.text == "بازگشت": return await admin_panel_start(update, context)
-    
-    new_admin_id = update.message.text
-    if not new_admin_id.isdigit():
-        await update.message.reply_text("آیدی باید عدد باشد.")
-        return ADD_ADMIN_INPUT
-        
-    conn = get_db()
-    conn.execute("UPDATE users SET is_admin=1 WHERE user_id=?", (new_admin_id,))
-    conn.commit()
-    conn.close()
-    
-    await update.message.reply_text(f"✅ کاربر {new_admin_id} اکنون ادمین است.")
-    await admin_panel_start(update, context)
-    return ADMIN_PANEL
-
-# --- ویرایش متن‌ها ---
-async def edit_text_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.text == "بازگشت": return await admin_panel_start(update, context)
-    
-    context.user_data['edit_key'] = update.message.text
-    curr = get_text(update.message.text)
-    await update.message.reply_text(f"متن فعلی:\n{curr}\n\nمتن جدید را بفرستید (می‌توانید از {{name}} برای نام کاربر استفاده کنید):")
-    return EDIT_TEXT_INPUT
-
-async def edit_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    new_text = update.message.text
-    key = context.user_data['edit_key']
-    conn = get_db()
-    conn.execute("INSERT OR REPLACE INTO dynamic_texts (key, content) VALUES (?, ?)", (key, new_text))
-    conn.commit()
-    conn.close()
-    await update.message.reply_text("✅ متن ذخیره شد.")
-    await admin_panel_start(update, context)
-    return ADMIN_PANEL
-
-# --- مدیریت لایو ---
-async def manage_live_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    if text == "بازگشت": return await admin_panel_start(update, context)
-    
-    if text == "تنظیم لینک زنده":
-        await update.message.reply_text("لینک و عنوان را در دو خط بفرستید:\nعنوان\nلینک")
-        return SET_LIVE_LINK
-    elif text == "آپلود آرشیو":
-        await update.message.reply_text("ویدیو را بفرستید:")
-        return UPLOAD_LIVE_FILE
-    elif text == "غیرفعال کردن لایو":
-        conn = get_db()
-        conn.execute("UPDATE lives SET is_active=0")
-        conn.commit()
-        conn.close()
-        await update.message.reply_text("لایو غیرفعال شد.")
-        await admin_panel_start(update, context)
+        await update.message.reply_text("یافت نشد.")
         return ADMIN_PANEL
+    await update.message.reply_text(f"👤 {u[0]} - رفرال: {u[1]}", reply_markup=ReplyKeyboardMarkup([["➕ تایید (افزایش)", "➖ رد (کاهش)"], ["بازگشت"]], resize_keyboard=True))
+    return MANAGE_USER_ACTION
+async def manage_user_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.text=="بازگشت": return await admin_panel_start(update, context)
+    conn = get_db()
+    if "افزایش" in update.message.text:
+        conn.execute("UPDATE users SET referrals_confirmed=referrals_confirmed+1 WHERE user_id=?", (context.user_data['uid'],))
+    elif "کاهش" in update.message.text:
+        conn.execute("UPDATE users SET referrals_confirmed=max(0, referrals_confirmed-1) WHERE user_id=?", (context.user_data['uid'],))
+    conn.commit()
+    conn.close()
+    await update.message.reply_text("✅ انجام شد.")
+    await admin_panel_start(update, context)
+    return ADMIN_PANEL
+
+# --- سایر بخش‌های مدیریت ---
+async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    conn = get_db()
+    conn.execute("UPDATE users SET is_admin=1 WHERE user_id=?", (update.message.text,))
+    conn.commit()
+    conn.close()
+    await update.message.reply_text("✅ ادمین شد.")
+    await admin_panel_start(update, context)
+    return ADMIN_PANEL
+
+async def edit_text_sel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['key'] = update.message.text
+    await update.message.reply_text("متن جدید:")
+    return EDIT_TEXT_INPUT
+async def edit_text_inp(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    conn = get_db()
+    conn.execute("INSERT OR REPLACE INTO dynamic_texts (key, content) VALUES (?, ?)", (context.user_data['key'], update.message.text))
+    conn.commit()
+    conn.close()
+    await update.message.reply_text("✅")
+    await admin_panel_start(update, context)
+    return ADMIN_PANEL
+
+async def manage_live(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.text=="بازگشت": return await admin_panel_start(update, context)
+    if update.message.text=="تنظیم لینک":
+        await update.message.reply_text("خط1: عنوان\nخط2: لینک")
+        return SET_LIVE_LINK
+    if update.message.text=="آپلود آرشیو":
+        await update.message.reply_text("ویدیو:")
+        return UPLOAD_LIVE_FILE
     return MANAGE_LIVE_MENU
 
-async def set_live_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    lines = update.message.text.split('\n')
-    if len(lines) < 2:
-        await update.message.reply_text("فرمت اشتباه است.")
-        return SET_LIVE_LINK
+async def set_live(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    l = update.message.text.split('\n')
     conn = get_db()
     conn.execute("UPDATE lives SET is_active=0")
-    conn.execute("INSERT INTO lives (title, link, is_active) VALUES (?, ?, 1)", (lines[0], lines[1]))
+    conn.execute("INSERT INTO lives (title, link, is_active) VALUES (?,?,1)", (l[0], l[1]))
     conn.commit()
     conn.close()
-    await update.message.reply_text("✅ لایو فعال شد.")
+    await update.message.reply_text("✅")
     await admin_panel_start(update, context)
     return ADMIN_PANEL
 
-async def upload_live_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message.video:
-        await update.message.reply_text("ویدیو بفرستید.")
-        return UPLOAD_LIVE_FILE
+async def upload_live(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = get_db()
-    conn.execute("INSERT INTO lives (title, file_id, date_recorded, is_active) VALUES (?, ?, ?, 0)",
-                 (update.message.caption or "آرشیو", update.message.video.file_id, datetime.now().strftime("%Y-%m-%d")))
+    conn.execute("INSERT INTO lives (title, file_id, date_recorded, is_active) VALUES (?,?,?,0)",
+                 (update.message.caption or "Live", update.message.video.file_id, datetime.now().strftime("%Y-%m-%d")))
     conn.commit()
     conn.close()
-    await update.message.reply_text("✅ آرشیو شد.")
+    await update.message.reply_text("✅")
     await admin_panel_start(update, context)
     return ADMIN_PANEL
 
-# --- پیام همگانی ---
-async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.text == "بازگشت": return await admin_panel_start(update, context)
-    
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.text=="بازگشت": return await admin_panel_start(update, context)
     conn = get_db()
     users = conn.execute("SELECT user_id FROM users").fetchall()
     conn.close()
-    
-    count = 0
-    await update.message.reply_text(f"درحال ارسال به {len(users)} کاربر...")
+    await update.message.reply_text(f"ارسال به {len(users)} نفر...")
     for u in users:
-        try:
-            await update.message.copy(u[0])
-            count += 1
-            await asyncio.sleep(0.05)
+        try: await update.message.copy(u[0])
         except: pass
-    
-    await update.message.reply_text(f"✅ ارسال شد به {count} نفر.")
+    await update.message.reply_text("✅ پایان.")
     await admin_panel_start(update, context)
     return ADMIN_PANEL
-
 
 def main():
     init_db()
     keep_alive()
-    
     app = Application.builder().token(TOKEN).build()
     
     conv = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^⚙️ پنل مدیریت$"), admin_panel_start)],
         states={
-            ADMIN_PANEL: [MessageHandler(filters.TEXT, admin_menu_handler)],
+            ADMIN_PANEL: [MessageHandler(filters.TEXT, admin_menu)],
             ADD_COURSE_DAY: [MessageHandler(filters.TEXT, add_course_day)],
             ADD_COURSE_PART: [MessageHandler(filters.TEXT, add_course_part)],
             ADD_COURSE_REFS: [MessageHandler(filters.TEXT, add_course_refs)],
             ADD_COURSE_CONTENT: [MessageHandler(filters.ALL, add_course_content)],
             MANAGE_USER_INPUT: [MessageHandler(filters.TEXT, manage_user_input)],
             MANAGE_USER_ACTION: [MessageHandler(filters.TEXT, manage_user_action)],
-            EDIT_TEXT_SELECT: [MessageHandler(filters.TEXT, edit_text_select)],
-            EDIT_TEXT_INPUT: [MessageHandler(filters.TEXT, edit_text_input)],
-            ADD_ADMIN_INPUT: [MessageHandler(filters.TEXT, add_admin_input)],
-            MANAGE_LIVE_MENU: [MessageHandler(filters.TEXT, manage_live_menu)],
-            SET_LIVE_LINK: [MessageHandler(filters.TEXT, set_live_link)],
-            UPLOAD_LIVE_FILE: [MessageHandler(filters.VIDEO, upload_live_file)],
-            BROADCAST_MESSAGE: [MessageHandler(filters.ALL, broadcast_message)],
+            ADD_ADMIN_INPUT: [MessageHandler(filters.TEXT, add_admin)],
+            EDIT_TEXT_SELECT: [MessageHandler(filters.TEXT, edit_text_sel)],
+            EDIT_TEXT_INPUT: [MessageHandler(filters.TEXT, edit_text_inp)],
+            MANAGE_LIVE_MENU: [MessageHandler(filters.TEXT, manage_live)],
+            SET_LIVE_LINK: [MessageHandler(filters.TEXT, set_live)],
+            UPLOAD_LIVE_FILE: [MessageHandler(filters.VIDEO, upload_live)],
+            BROADCAST_MESSAGE: [MessageHandler(filters.ALL, broadcast)],
         },
-        fallbacks=[MessageHandler(filters.Regex("^❌ خروج از پنل$"), admin_menu_handler)]
+        fallbacks=[MessageHandler(filters.Regex("^❌ خروج$"), admin_menu)]
     )
     
     app.add_handler(conv)
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(callback_query_handler))
-    # هندلر کلی برای متن‌های منوی اصلی
+    app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     
-    print("Bot is up and running...")
+    print("Bot Started...")
     app.run_polling()
 
 if __name__ == "__main__":
     main()
+
