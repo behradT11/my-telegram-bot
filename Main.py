@@ -1,4 +1,4 @@
-import logging
+mport logging
 import sqlite3
 import asyncio
 import threading
@@ -19,7 +19,8 @@ from telegram.ext import (
 from telegram.error import BadRequest, NetworkError
 
 # --- تنظیمات ---
-TOKEN "8582244459:AAHJuWSrJVO0NQS6vAukbY1IV5WT5uIPUlE"
+# ✅ توکن جدید جایگزین شد
+TOKEN = "8582244459:AAHJuWSrJVO0NQS6vAukbY1IV5WT5uIPUlE"
 ADMIN_PASSWORD = "ParsTrade@2025!Secure#Admin"
 OWNER_ID = 6735282633
 CHANNEL_ID = -1002216477329
@@ -30,7 +31,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot V10 Auto-Fix is Running OK."
+    return "Bot V11 New Token is Running OK."
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -57,7 +58,7 @@ logger = logging.getLogger(__name__)
 
 # --- دیتابیس ---
 def get_db():
-    conn = sqlite3.connect("parstrade_v10.db", check_same_thread=False)
+    conn = sqlite3.connect("parstrade_v11.db", check_same_thread=False)
     return conn
 
 def init_db():
@@ -312,5 +313,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
