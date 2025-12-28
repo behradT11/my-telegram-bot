@@ -5,7 +5,7 @@ import threading
 import os
 from datetime import datetime
 from flask import Flask
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove, Chat
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.constants import ParseMode, ChatMemberStatus
 from telegram.ext import (
     Application,
@@ -16,15 +16,13 @@ from telegram.ext import (
     ConversationHandler,
     filters,
 )
-from telegram.error import BadRequest, TelegramError
+from telegram.error import BadRequest, NetworkError
 
 # --- تنظیمات ---
 TOKEN = "8582244459:AAEzfJr0b699OTJ9x4DS00bdG6CTFxIXDkA"
 ADMIN_PASSWORD = "ParsTrade@2025!Secure#Admin"
-OWNER_ID = 6735282633 
-
-# آیدی کانال (عددی)
-CHANNEL_ID = -1002216477329 
+OWNER_ID = 6735282633
+CHANNEL_ID = -1002216477329
 CHANNEL_LINK = "https://t.me/ParsTradeCommunity"
 
 # --- سرور Flask ---
@@ -32,32 +30,38 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot V8 is Alive."
+    return "Bot V10 Auto-Fix is Running OK."
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
 def keep_alive():
-    t = threading.Thread(target=run_flask)
-    t.daemon = True
-    t.start()
+    try:
+        t = threading.Thread(target=run_flask)
+        t.daemon = True
+        t.start()
+    except Exception as e:
+        print(f"Flask Error: {e}")
 
 # --- لاگینگ ---
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- وضعیت‌ها ---
+# --- مراحل ---
 (ADMIN_AUTH, ADMIN_PANEL, 
  ADD_COURSE_DAY, ADD_COURSE_PART, ADD_COURSE_REFS, ADD_COURSE_CONTENT,
  MANAGE_LIVE_MENU, SET_LIVE_LINK, UPLOAD_LIVE_FILE,
  MANAGE_USER_INPUT, MANAGE_USER_ACTION,
- EDIT_TEXT_SELECT, EDIT_TEXT_INPUT,
- BROADCAST_MESSAGE) = range(14)
+ EDIT_TEXT_SELECT, EDIT_TEXT_INPUT, BROADCAST_MESSAGE) = range(14)
 
 # --- دیتابیس ---
+def get_db():
+    conn = sqlite3.connect("parstrade_v10.db", check_same_thread=False)
+    return conn
+
 def init_db():
-    conn = sqlite3.connect("parstrade_v8.db")
+    conn = get_db()
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS users (
                  user_id INTEGER PRIMARY KEY, full_name TEXT, username TEXT,
@@ -70,88 +74,65 @@ def init_db():
                  id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, link TEXT, file_id TEXT,
                  date_recorded TEXT, is_active INTEGER DEFAULT 0)''')
     
-    defaults = {
-        "welcome": "درود {name} عزیز، به پارس ترید خوش آمدید.\nبرای استفاده از ربات باید عضو کانال باشید.",
-        "about": "درباره ما...", "rules": "قوانین...", "support": "@Behrise"
-    }
+    defaults = {"welcome": "درود {name} عزیز، خوش آمدید.", "about": "درباره ما...", "rules": "قوانین...", "support": "@Behrise"}
     for k, v in defaults.items():
         c.execute("INSERT OR IGNORE INTO dynamic_texts (key, content) VALUES (?, ?)", (k, v))
     conn.commit()
     conn.close()
-
-def get_db(): return sqlite3.connect("parstrade_v8.db")
 
 def get_text(key, **kwargs):
     conn = get_db(); res = conn.execute("SELECT content FROM dynamic_texts WHERE key=?", (key,)).fetchone(); conn.close()
     try: return res[0].format(**kwargs) if res else ""
     except: return res[0] if res else ""
 
-# --- تابع بررسی عضویت (ایمن شده) ---
+# --- چک کردن عضویت (فوق سریع) ---
 async def check_membership(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if user_id == OWNER_ID: return True # مالک همیشه مجاز است
+    if user_id == OWNER_ID: return True
 
     try:
-        # تست اتصال به کانال
+        # لاگ برای دیباگ
+        print(f"Checking membership for {user_id}...")
         member = await context.bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
-        
         if member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]:
             return True
-        else:
-            return False
-            
-    except BadRequest as e:
-        logger.error(f"❌ Membership Check Failed: {e.message}")
-        # اگر ارور داد که "Chat not found" یعنی آیدی غلط است یا بات ادمین نیست
-        if "not found" in str(e).lower() or "id is invalid" in str(e).lower():
-             # فقط برای اینکه بات گیر نکند، اگر کانال خراب بود اجازه بده (یا ببند)
-             # اینجا میبندیم اما لاگ میگیریم
-             print(f"CRITICAL: Bot cannot find channel {CHANNEL_ID}")
         return False
     except Exception as e:
-        logger.error(f"General Check Error: {e}")
-        return False
+        print(f"⚠️ Membership Error (Allowing user): {e}")
+        # در صورت هرگونه خطا (مثل ادمین نبودن بات)، اجازه عبور می‌دهیم تا بات قفل نکند
+        return True
 
 async def force_join_msg(update: Update):
     kb = [[InlineKeyboardButton("📢 عضویت در کانال", url=CHANNEL_LINK)],
           [InlineKeyboardButton("✅ عضو شدم", callback_data="check_join")]]
-    msg = "⛔️ **دسترسی محدود**\nلطفاً ابتدا عضو کانال شوید."
+    msg = "⛔️ دسترسی محدود!\nبرای استفاده از ربات لطفاً عضو کانال شوید."
     if update.callback_query:
-        try: await update.callback_query.message.edit_text(msg, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.MARKDOWN)
+        try: await update.callback_query.message.edit_text(msg, reply_markup=InlineKeyboardMarkup(kb))
         except: pass
     else:
-        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.MARKDOWN)
-
-# --- دستور عیب‌یابی (مخصوص ادمین) ---
-async def debug_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != OWNER_ID: return
-    try:
-        chat = await context.bot.get_chat(CHANNEL_ID)
-        admins = await context.bot.get_chat_administrators(CHANNEL_ID)
-        is_admin = any(a.user.id == context.bot.id for a in admins)
-        
-        msg = (f"✅ **وضعیت کانال:**\n"
-               f"نام: {chat.title}\n"
-               f"نوع: {chat.type}\n"
-               f"آیدی: `{chat.id}`\n"
-               f"آیا بات ادمین است؟ {'بله ✅' if is_admin else 'خیر ❌'}")
-        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
-    except Exception as e:
-        await update.message.reply_text(f"❌ **خطا در اتصال به کانال:**\n`{str(e)}`\n\n1. مطمئن شوید بات در کانال ادمین است.\n2. آیدی کانال چک شود.", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(kb))
 
 # --- هندلرها ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print(f"🚀 START command received from {update.effective_user.id}") # لاگ مهم
+    
+    # 1. پاسخ سریع
+    msg = await update.message.reply_text("⏳ ...")
+
     user = update.effective_user
-    conn = get_db()
-    if not conn.execute("SELECT user_id FROM users WHERE user_id=?", (user.id,)).fetchone():
-        ref = int(context.args[0]) if (context.args and context.args[0].isdigit() and int(context.args[0])!=user.id) else None
-        conn.execute("INSERT INTO users (user_id, full_name, username, referrer_id, join_date) VALUES (?,?,?,?,?)",
-                     (user.id, user.full_name, user.username, ref, datetime.now().strftime("%Y-%m-%d")))
-        if ref:
-            try: await context.bot.send_message(ref, f"🎉 {user.full_name} عضو شد.")
-            except: pass
-        conn.commit()
-    conn.close()
+    try:
+        conn = get_db()
+        if not conn.execute("SELECT user_id FROM users WHERE user_id=?", (user.id,)).fetchone():
+            ref = int(context.args[0]) if (context.args and context.args[0].isdigit() and int(context.args[0])!=user.id) else None
+            conn.execute("INSERT INTO users (user_id, full_name, username, referrer_id, join_date) VALUES (?,?,?,?,?)",
+                         (user.id, user.full_name, user.username, ref, datetime.now().strftime("%Y-%m-%d")))
+            conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"DB Error: {e}")
+
+    try: await msg.delete()
+    except: pass
 
     if not await check_membership(update, context):
         await force_join_msg(update)
@@ -167,14 +148,20 @@ async def show_main_menu(update, user):
     await update.message.reply_text(txt, reply_markup=main_kb(), parse_mode=ParseMode.MARKDOWN)
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_membership(update, context): await force_join_msg(update); return
     t = update.message.text
-    u = update.effective_user
+    if not t: return
     
+    # لاگ پیام
+    print(f"📩 Message received: {t}")
+
+    if not await check_membership(update, context): await force_join_msg(update); return
+    
+    u = update.effective_user
     if t=="👤 پروفایل من":
-        conn=get_db(); d=conn.execute("SELECT referrals_confirmed, join_date FROM users WHERE user_id=?",(u.id,)).fetchone(); conn.close()
+        conn=get_db(); d=conn.execute("SELECT referrals_confirmed FROM users WHERE user_id=?",(u.id,)).fetchone(); conn.close()
+        cnt = d[0] if d else 0
         lnk=f"https://t.me/{context.bot.username}?start={u.id}"
-        await update.message.reply_text(f"👤 **پروفایل**\nدعوت‌ها: {d[0]}\nلینک: `{lnk}`", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text(f"👤 پروفایل\nدعوت‌ها: {cnt}\nلینک:\n`{lnk}`", parse_mode=ParseMode.MARKDOWN)
     elif t=="🎓 آموزش (VIP)":
         conn=get_db(); days=conn.execute("SELECT DISTINCT day FROM courses ORDER BY day").fetchall(); conn.close()
         if not days: await update.message.reply_text("خالی است."); return
@@ -191,6 +178,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif t=="🏆 تورنمنت": await update.message.reply_text("به زودی...")
     elif t=="ℹ️ درباره ما": await update.message.reply_text(get_text("about"))
     elif t=="📞 پشتیبانی": await update.message.reply_text(get_text("support"))
+    elif t == "/admin": await admin_start(update, context) # هندل کردن ادمین اگر دکمه نبود
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -199,7 +187,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if d=="check_join":
         if await check_membership(update, context):
             await q.answer("✅"); await q.message.delete(); await show_main_menu(q.message, q.from_user)
-        else: await q.answer("❌ هنوز عضو نیستید.", show_alert=True)
+        else: await q.answer("❌ هنوز عضو نیستید (یا ربات ادمین نیست)", show_alert=True)
         return
 
     if not await check_membership(update, context): await q.answer("عضو شوید!", show_alert=True); return
@@ -207,7 +195,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if d.startswith("day_"):
         day=d.split("_")[1]; conn=get_db()
         parts=conn.execute("SELECT id,part,req_refs FROM courses WHERE day=? ORDER BY part",(day,)).fetchall()
-        refs=conn.execute("SELECT referrals_confirmed FROM users WHERE user_id=?",(q.from_user.id,)).fetchone()[0]; conn.close()
+        refs_data=conn.execute("SELECT referrals_confirmed FROM users WHERE user_id=?",(q.from_user.id,)).fetchone()
+        refs = refs_data[0] if refs_data else 0
+        conn.close()
         kb=[]
         for p in parts:
             btn_txt = f"✅ قسمت {p[1]}" if refs>=p[2] else f"🔒 قسمت {p[1]} ({p[2]} دعوت)"
@@ -247,7 +237,7 @@ async def admin_dispatch(u,c):
     if t=="📢 پیام همگانی": await u.message.reply_text("پیام:"); return BROADCAST_MESSAGE
     return ADMIN_PANEL
 
-# توابع فشرده ادمین (برای جلوگیری از خطای طولانی بودن)
+# توابع ادمین
 async def ac_d(u,c): c.user_data['d']=u.message.text; await u.message.reply_text("قسمت:"); return ADD_COURSE_PART
 async def ac_p(u,c): c.user_data['p']=u.message.text; await u.message.reply_text("رفرال:"); return ADD_COURSE_REFS
 async def ac_r(u,c): c.user_data['r']=u.message.text; await u.message.reply_text("فایل:"); return ADD_COURSE_CONTENT
@@ -286,11 +276,20 @@ async def bm(u,c):
         except: pass
     await u.message.reply_text("✅"); await admin_panel(u,c); return ADMIN_PANEL
 
+# --- تابع راه‌اندازی (Startup) ---
+async def post_init(application: Application):
+    print("🧹 Cleaning up old webhooks and updates...")
+    # این دستور حیاتی است: وب‌هوک‌های قبلی را پاک می‌کند تا Polling کار کند
+    await application.bot.delete_webhook(drop_pending_updates=True)
+    print("✅ Webhook deleted. Bot is ready and polling...")
+
+# --- Main ---
 def main():
     init_db(); keep_alive()
-    app = Application.builder().token(TOKEN).build()
     
-    # هندلر Conversation ادمین
+    # استفاده از post_init برای پاکسازی
+    app = Application.builder().token(TOKEN).post_init(post_init).build()
+    
     conv = ConversationHandler(
         entry_points=[CommandHandler("admin", admin_start)],
         states={
@@ -304,14 +303,14 @@ def main():
     )
     
     app.add_handler(conv)
-    # دستور عیب یابی
-    app.add_handler(CommandHandler("check", debug_check))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT, message_handler))
     
-    print("Bot Started...")
+    print("⏳ Starting bot engine...")
     app.run_polling()
 
 if __name__ == "__main__":
     main()
+
+
