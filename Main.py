@@ -19,7 +19,7 @@ from telegram.ext import (
 from telegram.error import BadRequest, NetworkError
 
 # --- تنظیمات ---
-TOKEN = "8582244459:AAEzfJr0b699OTJ9x4DS00bdG6CTFxIXDkA"
+TOKEN "8582244459:AAHJuWSrJVO0NQS6vAukbY1IV5WT5uIPUlE"
 ADMIN_PASSWORD = "ParsTrade@2025!Secure#Admin"
 OWNER_ID = 6735282633
 CHANNEL_ID = -1002216477329
