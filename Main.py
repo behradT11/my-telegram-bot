@@ -22,17 +22,17 @@ from telegram.error import BadRequest
 TOKEN = "8582244459:AAEzfJr0b699OTJ9x4DS00bdG6CTFxIXDkA"
 ADMIN_PASSWORD = "ParsTrade@2025!Secure#Admin"
 
-# ⚠️ نکته مهم: اگر با آیدی @ کار نکرد، باید آیدی عددی کانال را بگذارید (که با -100 شروع می‌شود)
-# برای پیدا کردن آیدی عددی، یک پیام از کانال به ربات @userinfobot فوروارد کنید.
-CHANNEL_ID = "@ParsTradeCommunity" 
-OWNER_ID = 6735282633  # آیدی شما (برای ورود بدون چک کردن عضویت)
+# ✅ تنظیمات کانال (اصلاح شده با آیدی عددی)
+CHANNEL_ID = -1002216477329  # آیدی عددی برای چک کردن عضویت (دقیق)
+CHANNEL_LINK = "https://t.me/ParsTradeCommunity"  # لینک برای دکمه شیشه‌ای
+OWNER_ID = 6735282633  # آیدی شما
 
-# --- سرور Flask ---
+# --- سرور Flask (برای Render) ---
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Pars Trade Bot V6 is Running..."
+    return "Pars Trade Bot V7 is Running..."
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -47,7 +47,7 @@ def keep_alive():
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- مراحل ---
+# --- مراحل Conversation ---
 (
     ADMIN_AUTH, ADMIN_PANEL,
     ADD_COURSE_DAY, ADD_COURSE_PART, ADD_COURSE_REFS, ADD_COURSE_CONTENT,
@@ -59,7 +59,7 @@ logger = logging.getLogger(__name__)
 
 # --- دیتابیس ---
 def init_db():
-    conn = sqlite3.connect("parstrade_v6.db")
+    conn = sqlite3.connect("parstrade_v7.db")
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS users (
                  user_id INTEGER PRIMARY KEY,
@@ -79,7 +79,7 @@ def init_db():
                  title TEXT, link TEXT, file_id TEXT,
                  date_recorded TEXT, is_active INTEGER DEFAULT 0)''')
 
-    # متون پیش‌فرض
+    # متون پیش‌فرض حرفه‌ای
     welcome_msg = (
         "🌺 **درود بر شما {name} عزیز، به خانواده بزرگ پارس ترید خوش آمدید!** 🌺\n\n"
         "ما در **Pars Trade Community** مفتخریم که شما را همراهی کنیم.\n"
@@ -97,7 +97,7 @@ def init_db():
     conn.close()
 
 def get_db():
-    return sqlite3.connect("parstrade_v6.db")
+    return sqlite3.connect("parstrade_v7.db")
 
 def get_text(key, **kwargs):
     conn = get_db()
@@ -107,7 +107,7 @@ def get_text(key, **kwargs):
     try: return text.format(**kwargs)
     except: return text
 
-# --- تابع اصلاح شده بررسی عضویت (FIXED) ---
+# --- چک کردن عضویت (با آیدی عددی) ---
 async def check_membership(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
@@ -116,13 +116,11 @@ async def check_membership(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return True
 
     try:
-        # دریافت وضعیت کاربر از کانال
+        # استفاده از آیدی عددی کانال
         cm = await context.bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
         
-        # لاگ کردن وضعیت برای دیباگ (در کنسول رندر دیده می‌شود)
-        print(f"DEBUG: User {user_id} Status in {CHANNEL_ID} is: {cm.status}")
+        print(f"DEBUG: User {user_id} Status: {cm.status}") # لاگ وضعیت
 
-        # لیست وضعیت‌های مجاز (Creator برای سازنده کانال است)
         VALID_STATUS = [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]
         
         if cm.status in VALID_STATUS:
@@ -131,23 +129,18 @@ async def check_membership(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return False
 
     except BadRequest as e:
-        # اگر بات ادمین نباشد یا آیدی کانال اشتباه باشد این ارور می‌آید
-        print(f"CRITICAL ERROR in check_membership: {e}")
-        logger.error(f"Bot failed to check member status. Ensure Bot is Admin in {CHANNEL_ID}")
-        return False
+        logger.error(f"Membership Check Error: {e} | Ensure Bot is Admin in Channel {CHANNEL_ID}")
+        return False # سخت‌گیرانه: اگر نتوانیم چک کنیم، اجازه نمی‌دهیم
     except Exception as e:
-        print(f"General Error: {e}")
+        print(f"General Check Error: {e}")
         return False
 
 async def force_join_message(update: Update):
-    # پاک کردن @ از آیدی برای لینک
-    clean_id = CHANNEL_ID.replace("@", "") if "@" in CHANNEL_ID else "ParsTradeCommunity" # فال‌بک
-    
     kb = [
-        [InlineKeyboardButton("📢 عضویت در کانال (الزامی)", url=f"https://t.me/{clean_id}")],
+        [InlineKeyboardButton("📢 عضویت در کانال (الزامی)", url=CHANNEL_LINK)],
         [InlineKeyboardButton("✅ عضو شدم", callback_data="check_join")]
     ]
-    msg = "⛔️ **دسترسی محدود!**\n\nبرای استفاده از ربات، عضویت در کانال الزامی است."
+    msg = "⛔️ **دسترسی محدود!**\n\nبرای استفاده از ربات، عضویت در کانال الزامی است.\nلطفاً عضو شوید و دکمه زیر را بزنید."
     
     if update.callback_query:
         try: await update.callback_query.message.edit_text(msg, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.MARKDOWN)
@@ -182,6 +175,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(get_text("welcome", name=user.first_name), reply_markup=main_menu_keyboard(), parse_mode=ParseMode.MARKDOWN)
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # چک کردن عضویت در هر پیام
     if not await check_membership(update, context):
         await force_join_message(update)
         return
@@ -238,7 +232,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.message.delete()
             await q.message.reply_text(get_text("welcome", name=q.from_user.first_name), reply_markup=main_menu_keyboard(), parse_mode=ParseMode.MARKDOWN)
         else:
-            await q.answer("❌ هنوز عضو نیستید (یا ربات ادمین نیست).", show_alert=True)
+            await q.answer("❌ تایید نشد. لطفا عضو کانال شوید.", show_alert=True)
         return
 
     if not await check_membership(update, context):
@@ -294,7 +288,7 @@ async def admin_dispatch(u: Update, c: ContextTypes.DEFAULT_TYPE):
     elif t=="📢 پیام همگانی": await u.message.reply_text("پیام:"); return BROADCAST_MESSAGE
     return ADMIN_PANEL
 
-# توابع خلاصه شده ادمین (منطق تکراری)
+# توابع خلاصه ادمین
 async def add_c_d(u,c): c.user_data['d']=u.message.text; await u.message.reply_text("قسمت:"); return ADD_COURSE_PART
 async def add_c_p(u,c): c.user_data['p']=u.message.text; await u.message.reply_text("رفرال:"); return ADD_COURSE_REFS
 async def add_c_r(u,c): c.user_data['r']=u.message.text; await u.message.reply_text("فایل:"); return ADD_COURSE_CONTENT
