@@ -18,7 +18,7 @@ from telegram.ext import (
 )
 
 # --- تنظیمات ---
-TOKEN = "8582244459:AAEzfJr0b699OTJ9x4DS00bdG6CTFxIXDkA"
+TOKEN = "8582244459:AAHJuWSrJVO0NQS6vAukbY1IV5WT5uIPUlE"
 ADMIN_PASSWORD = "123456" # رمز ادمین
 CHANNEL_ID = "@ParsTradeCommunity" # آیدی کانال با @
 GROUP_ID = "@ParsTradeGP" # آیدی گروه با @
