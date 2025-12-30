@@ -1,9 +1,8 @@
-mport logging
+import logging
 import sqlite3
 import asyncio
 import threading
-import os
-import requests
+import time
 from datetime import datetime
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
@@ -19,299 +18,543 @@ from telegram.ext import (
 )
 
 # --- تنظیمات ---
-TOKEN = "8582244459:AAHJuWSrJVO0NQS6vAukbY1IV5WT5uIPUlE"
-ADMIN_PASSWORD = "ParsTrade@2025!Secure#Admin"
-OWNER_ID = 6735282633
-CHANNEL_ID = -1002216477329
-CHANNEL_LINK = "https://t.me/ParsTradeCommunity"
+TOKEN = "8582244459:AAEzfJr0b699OTJ9x4DS00bdG6CTFxIXDkA"
+ADMIN_PASSWORD = "123456" # رمز ادمین
+CHANNEL_ID = "@ParsTradeCommunity" # آیدی کانال با @
+GROUP_ID = "@ParsTradeGP" # آیدی گروه با @
 
-# --- پاکسازی دستی وب‌هوک (شوک اولیه) ---
-def force_delete_webhook():
-    try:
-        requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook?drop_pending_updates=True")
-    except: pass
-
-# --- سرور Flask ---
+# --- Flask Server برای جلوگیری از خاموشی در Render ---
 app = Flask(__name__)
+
 @app.route('/')
-def home(): return "Bot V13 is Ready."
-def run_flask(): app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)), debug=False, use_reloader=False)
-def keep_alive(): threading.Thread(target=run_flask, daemon=True).start()
+def home():
+    return "Bot is alive!"
+
+def run_flask():
+    app.run(host="0.0.0.0", port=8080)
+
+def keep_alive():
+    t = threading.Thread(target=run_flask)
+    t.daemon = True
+    t.start()
 
 # --- لاگینگ ---
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# --- دیتابیس (با متون کامل) ---
-db_lock = threading.Lock()
-def get_db(): return sqlite3.connect("parstrade_v13.db", check_same_thread=False)
+# --- وضعیت‌های Conversation ---
+(
+    ADMIN_AUTH, ADMIN_MENU, 
+    ADD_COURSE_DAY, ADD_COURSE_PART, ADD_COURSE_REFS, ADD_COURSE_CONTENT,
+    MANAGE_LIVE_MENU, SET_LIVE_LINK, UPLOAD_LIVE_FILE,
+    EDIT_TEXT_SELECT, EDIT_TEXT_INPUT,
+    MANAGE_USER_INPUT, MANAGE_USER_ACTION, MANAGE_USER_REASON,
+    BROADCAST_MESSAGE
+) = range(15)
 
+# --- دیتابیس ---
 def init_db():
-    with db_lock:
-        conn = get_db()
-        c = conn.cursor()
-        c.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, full_name TEXT, username TEXT, referrer_id INTEGER, referrals_confirmed INTEGER DEFAULT 0, join_date TEXT)''')
-        c.execute('''CREATE TABLE IF NOT EXISTS dynamic_texts (key TEXT PRIMARY KEY, content TEXT)''')
-        c.execute('''CREATE TABLE IF NOT EXISTS courses (id INTEGER PRIMARY KEY AUTOINCREMENT, day INTEGER, part INTEGER, req_refs INTEGER, content_type TEXT, file_id TEXT, caption TEXT)''')
-        c.execute('''CREATE TABLE IF NOT EXISTS lives (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, link TEXT, file_id TEXT, date_recorded TEXT, is_active INTEGER DEFAULT 0)''')
+    conn = sqlite3.connect("parstrade_v2.db")
+    c = conn.cursor()
+    # جدول کاربران
+    c.execute('''CREATE TABLE IF NOT EXISTS users (
+                 user_id INTEGER PRIMARY KEY,
+                 username TEXT,
+                 referrer_id INTEGER,
+                 referrals_confirmed INTEGER DEFAULT 0,
+                 join_date TEXT
+                 )''')
+    # جدول متون قابل ویرایش
+    c.execute('''CREATE TABLE IF NOT EXISTS dynamic_texts (
+                 key TEXT PRIMARY KEY,
+                 content TEXT
+                 )''')
+    # جدول دوره‌ها (با تعداد رفرال مخصوص هر دوره)
+    c.execute('''CREATE TABLE IF NOT EXISTS courses (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 day INTEGER,
+                 part INTEGER,
+                 req_refs INTEGER,
+                 content_type TEXT,
+                 file_id TEXT,
+                 caption TEXT
+                 )''')
+    # جدول لایو ترید
+    c.execute('''CREATE TABLE IF NOT EXISTS lives (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 title TEXT,
+                 link TEXT,
+                 file_id TEXT,
+                 date_recorded TEXT,
+                 is_active INTEGER DEFAULT 0
+                 )''')
+    
+    # متون پیش‌فرض
+    defaults = {
+        "welcome": "درود به کامیونیتی پارس ترید خوش آمدید. 🌹",
+        "rules": "قوانین استفاده از بات...",
+        "about": "درباره پارس ترید..."
+    }
+    for k, v in defaults.items():
+        c.execute("INSERT OR IGNORE INTO dynamic_texts (key, content) VALUES (?, ?)", (k, v))
         
-        # متون پیش‌فرض کامل و حرفه‌ای
-        welcome_msg = (
-            "🌺 **درود بر شما {name} عزیز، به خانواده بزرگ پارس ترید خوش آمدید!** 🌺\n\n"
-            "ما در **Pars Trade Community** مفتخریم که شما را در مسیر پرچالش اما شیرین معامله‌گری همراهی کنیم.\n"
-            "این ربات دروازه ورود شما به دنیایی از آموزش‌های تخصصی، تحلیل‌های ناب و ابزارهای حرفه‌ای ترید است.\n\n"
-            "💎 **خدمات ما:**\n"
-            "├ 🎓 دوره‌های آموزشی VIP (صفر تا صد)\n"
-            "├ 🔴 لایو تریدهای تخصصی و پرسود\n"
-            "└ 🏆 تورنمنت‌های ترید با جوایز نفیس\n\n"
-            "👇 از منوی زیر استفاده کنید:"
-        )
-        about_msg = (
-            "🏢 **درباره پارس ترید (Pars Trade)**\n\n"
-            "ما یک تیم متشکل از معامله‌گران حرفه‌ای و تحلیل‌گران بازارهای مالی هستیم که با هدف ارتقای سطح دانش تریدرهای ایرانی گرد هم آمده‌ایم.\n\n"
-            "🎯 **رسالت ما:**\n"
-            "پرورش معامله‌گرانی منضبط، صبور و سودده است که بتوانند در بازارهای پرنوسان فارکس، کریپتو و ... به استقلال مالی برسند.\n\n"
-            "🌐 وب‌سایت ما: pars-trade.com\n"
-            "🆔 کانال تلگرام: @ParsTradeCommunity"
-        )
-        rules_msg = (
-            "⚖️ **قوانین و مقررات استفاده از ربات**\n\n"
-            "1️⃣ **عضویت اجباری:** استفاده از تمامی خدمات ربات منوط به عضویت دائمی در کانال تلگرام ماست.\n"
-            "2️⃣ **صداقت در رفرال:** کاربرانی که با اکانت‌های فیک اقدام به زیرمجموعه‌گیری کنند، توسط سیستم هوشمند شناسایی و مسدود خواهند شد.\n"
-            "3️⃣ **تکریم اعضا:** هرگونه بی‌احترامی در گروه پشتیبانی منجر به قطع دسترسی خواهد شد."
-        )
-        support_msg = "👨‍💻 **پشتیبانی اختصاصی**\n\nجهت ارتباط با ادمین: @Behrise"
+    conn.commit()
+    conn.close()
 
-        defaults = {"welcome": welcome_msg, "about": about_msg, "rules": rules_msg, "support": support_msg}
-        for k, v in defaults.items():
-            c.execute("INSERT OR IGNORE INTO dynamic_texts (key, content) VALUES (?, ?)", (k, v))
-        conn.commit()
-        conn.close()
+def get_db():
+    return sqlite3.connect("parstrade_v2.db")
 
-def get_text(key, **kwargs):
-    with db_lock:
-        conn = get_db()
-        res = conn.execute("SELECT content FROM dynamic_texts WHERE key=?", (key,)).fetchone()
-        conn.close()
-    try: return res[0].format(**kwargs) if res else ""
-    except: return res[0] if res else ""
-
-# --- لاجیک عضویت (بدون پارتی بازی) ---
-async def check_membership(user_id, bot):
-    # نکته: خط زیر حذف شد تا حتی شما هم چک شوید
-    # if user_id == OWNER_ID: return True 
-    
+# --- توابع کمکی ---
+async def check_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """بررسی عضویت کاربر در کانال و گروه"""
+    user_id = update.effective_user.id
     try:
-        member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
-        if member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]:
-            return True
-        return False
+        chat_member = await context.bot.get_chat_member(CHANNEL_ID, user_id)
+        if chat_member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED, ChatMemberStatus.RESTRICTED]:
+            return False
+        # اگر نیاز به چک کردن گروه هم هست خطوط زیر را فعال کنید
+        # group_member = await context.bot.get_chat_member(GROUP_ID, user_id)
+        # if group_member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
+        #     return False
+        return True
     except Exception as e:
-        print(f"⚠️ Membership Check Error: {e}")
-        # اگر بات ادمین نباشد، ارور میدهد. اینجا False میدهیم تا ادمین مجبور شود بات را در کانال ادمین کند
-        return False 
+        logger.error(f"Error checking sub: {e}")
+        return True # در صورت خطا فرض بر عضویت میگیریم که بات گیر نکند (یا میتوانید False کنید)
 
-async def send_force_join(update):
-    kb = [[InlineKeyboardButton("📢 عضویت در کانال", url=CHANNEL_LINK)],
-          [InlineKeyboardButton("✅ عضو شدم", callback_data="check_join")]]
-    msg = "⛔️ **دسترسی محدود!**\n\nبرای استفاده از ربات، عضویت در کانال الزامی است.\nلطفاً عضو شوید و دکمه زیر را بزنید."
-    
-    if update.callback_query:
-        try: await update.callback_query.message.edit_text(msg, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.MARKDOWN)
-        except: pass
-    else:
-        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.MARKDOWN)
+async def delete_msg(context, chat_id, message_id):
+    """حذف پیام برای تمیز کردن چت"""
+    try:
+        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except:
+        pass
 
-# --- هندلرها ---
+def get_text(key):
+    conn = get_db()
+    res = conn.execute("SELECT content FROM dynamic_texts WHERE key=?", (key,)).fetchone()
+    conn.close()
+    return res[0] if res else ""
+
+# --- هندلرهای کاربر ---
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    try:
-        with db_lock:
-            conn = get_db()
-            if not conn.execute("SELECT user_id FROM users WHERE user_id=?", (user.id,)).fetchone():
-                ref = int(context.args[0]) if (context.args and context.args[0].isdigit() and int(context.args[0])!=user.id) else None
-                conn.execute("INSERT INTO users (user_id, full_name, username, referrer_id, join_date) VALUES (?,?,?,?,?)",
-                             (user.id, user.full_name, user.username, ref, datetime.now().strftime("%Y-%m-%d")))
-                conn.commit()
-            conn.close()
-    except: pass
+    args = context.args
+    conn = get_db()
+    
+    # ثبت کاربر
+    exists = conn.execute("SELECT user_id FROM users WHERE user_id=?", (user.id,)).fetchone()
+    if not exists:
+        referrer = int(args[0]) if (args and args[0].isdigit() and int(args[0]) != user.id) else None
+        conn.execute("INSERT INTO users (user_id, username, referrer_id, join_date) VALUES (?, ?, ?, ?)",
+                     (user.id, user.username, referrer, datetime.now().strftime("%Y-%m-%d")))
+        
+        # اگر معرف داشت، به صورت معلق اضافه می‌شود (ادمین می‌تواند مدیریت کند، اما اینجا فعلا اتوماتیک اضافه می‌کنیم)
+        if referrer:
+            conn.execute("UPDATE users SET referrals_confirmed = referrals_confirmed + 1 WHERE user_id=?", (referrer,))
+            try:
+                await context.bot.send_message(referrer, f"🎉 کاربر {user.first_name} با لینک شما وارد شد.")
+            except:
+                pass
+        conn.commit()
+    conn.close()
 
-    if not await check_membership(user.id, context.bot):
-        await send_force_join(update)
+    if not await check_subscription(update, context):
+        keyboard = [
+            [InlineKeyboardButton("عضویت در کانال", url=f"https://t.me/{CHANNEL_ID[1:]}")],
+            [InlineKeyboardButton("عضویت در گروه", url=f"https://t.me/{GROUP_ID[1:]}")],
+            [InlineKeyboardButton("✅ عضو شدم", callback_data="main_menu")]
+        ]
+        await update.message.reply_text("⛔️ برای استفاده از ربات باید ابتدا عضو کانال و گروه ما شوید:", reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
-    await show_menu(update, user)
+    await show_main_menu(update, context)
 
-def main_kb():
-    return ReplyKeyboardMarkup([["🎓 آموزش (VIP)", "🔴 لایو ترید"], ["🏆 تورنمنت", "👤 پروفایل من"], ["ℹ️ درباره ما", "📞 پشتیبانی"]], resize_keyboard=True)
-
-async def show_menu(update, user):
-    txt = get_text("welcome", name=user.first_name)
-    await update.message.reply_text(txt, reply_markup=main_kb(), parse_mode=ParseMode.MARKDOWN)
-
-async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    t = update.message.text
-    u = update.effective_user
-    if not t: return
-
-    # چک کردن عضویت در هر پیام
-    if not await check_membership(u.id, context.bot): await send_force_join(update); return
-
-    if t == "👤 پروفایل من":
-        with db_lock:
-            conn = get_db(); d = conn.execute("SELECT referrals_confirmed FROM users WHERE user_id=?", (u.id,)).fetchone(); conn.close()
-        cnt = d[0] if d else 0
-        lnk = f"https://t.me/{context.bot.username}?start={u.id}"
-        await update.message.reply_text(f"👤 **پروفایل**\nدعوت‌ها: {cnt}\nلینک:\n`{lnk}`", parse_mode=ParseMode.MARKDOWN)
+async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    welcome_text = get_text("welcome")
+    keyboard = [
+        [InlineKeyboardButton("🎓 آموزش (VIP)", callback_data="menu_edu"), InlineKeyboardButton("🔴 لایو ترید", callback_data="menu_live")],
+        [InlineKeyboardButton("🏆 تورنمنت", callback_data="menu_tour"), InlineKeyboardButton("👤 پروفایل", callback_data="menu_prof")],
+        [InlineKeyboardButton("🌐 سایت", url="https://pars-trade.com"), InlineKeyboardButton("اینستاگرام", url="https://instagram.com/parstradecommunity")],
+        [InlineKeyboardButton("ℹ️ درباره ما", callback_data="menu_about")]
+    ]
     
-    elif t == "🎓 آموزش (VIP)":
-        with db_lock:
-            conn=get_db(); days=conn.execute("SELECT DISTINCT day FROM courses ORDER BY day").fetchall(); conn.close()
-        if not days: await update.message.reply_text("هنوز آموزشی نیست."); return
-        kb=[[InlineKeyboardButton(f"روز {d[0]}", callback_data=f"day_{d[0]}")] for d in days]
-        await update.message.reply_text("انتخاب روز:", reply_markup=InlineKeyboardMarkup(kb))
-    
-    elif t == "🔴 لایو ترید":
-        with db_lock:
-            conn=get_db()
-            act=conn.execute("SELECT title,link FROM lives WHERE is_active=1").fetchone()
-            arc=conn.execute("SELECT id,title FROM lives WHERE is_active=0 ORDER BY id DESC LIMIT 5").fetchall()
-            conn.close()
-        kb=[]
-        if act: kb.append([InlineKeyboardButton("ورود به لایو", url=act[1])])
-        for a in arc: kb.append([InlineKeyboardButton(f"🎥 {a[1]}", callback_data=f"glive_{a[0]}")])
-        msg = f"لایو زنده: {act[0]}" if act else "لایو زنده نیست."
-        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(kb))
-    
-    elif t == "ℹ️ درباره ما": await update.message.reply_text(get_text("about"), parse_mode=ParseMode.MARKDOWN)
-    elif t == "📞 پشتیبانی": await update.message.reply_text(get_text("support"), parse_mode=ParseMode.MARKDOWN)
-    elif t == "🏆 تورنمنت": await update.message.reply_text("به زودی...")
+    if update.callback_query:
+        await update.callback_query.message.edit_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        await update.message.reply_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    d = q.data
-    u_id = q.from_user.id
-
-    if d == "check_join":
-        if await check_membership(u_id, context.bot):
-            await q.answer("✅ تایید شد"); await q.message.delete(); await show_menu(q.message, q.from_user)
-        else: await q.answer("❌ هنوز عضو نیستید یا بات ادمین نیست!", show_alert=True)
+    query = update.callback_query
+    data = query.data
+    user_id = query.from_user.id
+    
+    if not await check_subscription(update, context) and data != "main_menu":
+        await query.answer("لطفا ابتدا عضو کانال شوید!", show_alert=True)
         return
 
-    if not await check_membership(u_id, context.bot): await q.answer("عضو شوید", show_alert=True); return
-
-    if d.startswith("day_"):
-        day=d.split("_")[1]
-        with db_lock:
-            conn=get_db()
-            parts=conn.execute("SELECT id,part,req_refs FROM courses WHERE day=? ORDER BY part",(day,)).fetchall()
-            refs=conn.execute("SELECT referrals_confirmed FROM users WHERE user_id=?",(u_id,)).fetchone()[0]
-            conn.close()
-        kb=[]
-        for p in parts:
-            cb = f"gc_{p[0]}" if refs>=p[2] else f"al_{p[2]}"
-            txt = f"✅ Q{p[1]}" if refs>=p[2] else f"🔒 Q{p[1]} ({p[2]})"
-            kb.append([InlineKeyboardButton(txt, callback_data=cb)])
-        await q.message.edit_text(f"Day {day} - Refs: {refs}", reply_markup=InlineKeyboardMarkup(kb))
+    if data == "main_menu":
+        await show_main_menu(update, context)
     
-    elif d.startswith("gc_"):
-        cid = d.split("_")[1]
-        with db_lock:
-            conn=get_db(); c=conn.execute("SELECT content_type,file_id,caption FROM courses WHERE id=?",(cid,)).fetchone(); conn.close()
-        if c:
-            try:
-                if c[0]=='text': await q.message.reply_text(c[2])
-                elif c[0]=='video': await q.message.reply_video(c[1], caption=c[2])
-                elif c[0]=='photo': await q.message.reply_photo(c[1], caption=c[2])
-                elif c[0]=='document': await q.message.reply_document(c[1], caption=c[2])
-            except: await q.answer("فایل یافت نشد", show_alert=True)
-        await q.answer()
-    
-    elif d.startswith("al_"): await q.answer(f"نیاز به {d.split('_')[1]} رفرال", show_alert=True)
+    elif data == "menu_prof":
+        conn = get_db()
+        info = conn.execute("SELECT referrals_confirmed FROM users WHERE user_id=?", (user_id,)).fetchone()
+        count = info[0] if info else 0
+        conn.close()
+        bot_username = context.bot.username
+        link = f"https://t.me/{bot_username}?start={user_id}"
+        await query.message.edit_text(
+            f"👤 **پروفایل کاربری**\n\n🆔 آیدی: `{user_id}`\n👥 تعداد دعوت‌های تایید شده: **{count}**\n\n🔗 لینک دعوت شما:\n`{link}`",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 خانه", callback_data="main_menu")]]),
+            parse_mode=ParseMode.MARKDOWN
+        )
 
-# --- ادمین (اصلاح شده و بدون گیر کردن) ---
-(ADMIN_AUTH, ADMIN_PANEL, INPUT_WAIT) = range(3)
-
-async def admin_start(u, c):
-    await u.message.reply_text("🔒 رمز عبور مدیریت:", reply_markup=ReplyKeyboardRemove())
-    return ADMIN_AUTH
-
-async def admin_auth(u, c):
-    # .strip() حذف فاصله‌های اضافی
-    if u.message.text.strip() == ADMIN_PASSWORD:
-        kb = [["➕ افزودن آموزش", "🔴 مدیریت لایو"], ["📝 ویرایش متن", "❌ خروج"]]
-        await u.message.reply_text("✅ وارد شدید. انتخاب کنید:", reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
-        return ADMIN_PANEL
-    await u.message.reply_text("❌ رمز اشتباه است.")
-    return ADMIN_AUTH
-
-async def admin_panel_h(u, c):
-    t = u.message.text
-    if t == "❌ خروج": await show_menu(u, u.effective_user); return ConversationHandler.END
-    
-    if t == "➕ افزودن آموزش":
-        await u.message.reply_text("فرمت را وارد کنید:\nروز-قسمت-رفرال\nمثال: 1-2-5")
-        return INPUT_WAIT
-    
-    if t == "📝 ویرایش متن":
-        await u.message.reply_text("متاسفانه این بخش در حال تعمیر است.") # ساده‌سازی برای جلوگیری از باگ
-        return ADMIN_PANEL
+    elif data == "menu_live":
+        conn = get_db()
+        # لایو فعال
+        active = conn.execute("SELECT link, title FROM lives WHERE is_active=1").fetchone()
+        archives = conn.execute("SELECT id, title, date_recorded FROM lives WHERE is_active=0 ORDER BY id DESC LIMIT 5").fetchall()
+        conn.close()
         
-    return ADMIN_PANEL
+        msg = "🔴 **بخش لایو ترید**\n\n"
+        keyboard = []
+        
+        if active:
+            msg += f"🔥 **لایو در حال برگزاری:**\n{active[1]}\n"
+            keyboard.append([InlineKeyboardButton("ورود به لایو", url=active[0])])
+        else:
+            msg += "در حال حاضر لایوی برگزار نمی‌شود.\n"
+            
+        msg += "\n📂 **آرشیو لایوهای گذشته:**"
+        for arc in archives:
+            keyboard.append([InlineKeyboardButton(f"🎥 {arc[1]} ({arc[2]})", callback_data=f"get_live_{arc[0]}")])
+            
+        keyboard.append([InlineKeyboardButton("🔙 خانه", callback_data="main_menu")])
+        await query.message.edit_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
 
-async def admin_input(u, c):
-    try:
-        d, p, r = u.message.text.split('-')
-        c.user_data['temp'] = (d, p, r)
-        await u.message.reply_text("حالا فایل (ویدیو/عکس/داکیومنت) یا متن آموزش را بفرستید:")
-        return INPUT_WAIT + 1 
-    except:
-        await u.message.reply_text("❌ فرمت غلط. دوباره تلاش کنید:\nمثال: 1-2-5")
-        return INPUT_WAIT
+    elif data.startswith("get_live_"):
+        lid = data.split("_")[2]
+        conn = get_db()
+        live = conn.execute("SELECT file_id, title, date_recorded FROM lives WHERE id=?", (lid,)).fetchone()
+        conn.close()
+        if live:
+            caption = f"🎥 **{live[1]}**\n📅 تاریخ: {live[2]}\n\n🆔 @ParsTradeCommunity"
+            try:
+                await query.message.reply_video(live[0], caption=caption, parse_mode=ParseMode.MARKDOWN)
+            except:
+                await query.answer("فایل یافت نشد.", show_alert=True)
+        await query.answer()
 
-async def admin_save(u, c):
-    d, p, r = c.user_data['temp']
-    tp, fid = 'text', None
-    if u.message.video: tp,fid='video',u.message.video.file_id
-    elif u.message.photo: tp,fid='photo',u.message.photo[-1].file_id
-    elif u.message.document: tp,fid='document',u.message.document.file_id
+    elif data == "menu_edu":
+        conn = get_db()
+        days = conn.execute("SELECT DISTINCT day FROM courses ORDER BY day").fetchall()
+        conn.close()
+        keyboard = []
+        row = []
+        for d in days:
+            row.append(InlineKeyboardButton(f"روز {d[0]}", callback_data=f"day_{d[0]}"))
+            if len(row) == 3:
+                keyboard.append(row)
+                row = []
+        if row: keyboard.append(row)
+        keyboard.append([InlineKeyboardButton("🔙 خانه", callback_data="main_menu")])
+        await query.message.edit_text("🎓 دوره آموزشی\nروز مورد نظر را انتخاب کنید:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif data.startswith("day_"):
+        day = data.split("_")[1]
+        conn = get_db()
+        parts = conn.execute("SELECT id, part, req_refs FROM courses WHERE day=? ORDER BY part", (day,)).fetchall()
+        conn.close()
+        
+        # چک کردن تعداد رفرال کاربر
+        conn = get_db()
+        u_refs = conn.execute("SELECT referrals_confirmed FROM users WHERE user_id=?", (user_id,)).fetchone()[0]
+        conn.close()
+        
+        keyboard = []
+        for p in parts:
+            pid, pnum, req = p
+            status = "✅" if u_refs >= req else f"🔒 ({req} رفرال)"
+            callback = f"get_course_{pid}" if u_refs >= req else f"alert_req_{req}"
+            keyboard.append([InlineKeyboardButton(f"قسمت {pnum} {status}", callback_data=callback)])
+            
+        keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data="menu_edu")])
+        await query.message.edit_text(f"📚 محتوای روز {day}\nتعداد رفرال شما: {u_refs}", reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif data.startswith("alert_req_"):
+        req = data.split("_")[2]
+        await query.answer(f"برای مشاهده این قسمت نیاز به {req} رفرال دارید.", show_alert=True)
+
+    elif data.startswith("get_course_"):
+        cid = data.split("_")[2]
+        conn = get_db()
+        course = conn.execute("SELECT content_type, file_id, caption FROM courses WHERE id=?", (cid,)).fetchone()
+        conn.close()
+        
+        if course:
+            ctype, fid, cap = course
+            # ارسال فایل
+            if ctype == 'text': await query.message.reply_text(cap)
+            elif ctype == 'video': await query.message.reply_video(fid, caption=cap)
+            elif ctype == 'photo': await query.message.reply_photo(fid, caption=cap)
+            elif ctype == 'document': await query.message.reply_document(fid, caption=cap)
+        await query.answer()
+        
+    elif data == "menu_about":
+        txt = get_text("about")
+        await query.message.edit_text(txt, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 خانه", callback_data="main_menu")]]))
+
+# --- پنل ادمین ---
+
+async def admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🔒 رمز عبور:")
+    return ADMIN_AUTH
+
+async def admin_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.text == ADMIN_PASSWORD:
+        await admin_menu_show(update, context)
+        return ADMIN_MENU
+    else:
+        await update.message.reply_text("❌ اشتباه است.")
+        return ConversationHandler.END
+
+async def admin_menu_show(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kb = [
+        ["➕ افزودن آموزش", "🔴 مدیریت لایو"],
+        ["👥 مدیریت کاربر/رفرال", "📝 ویرایش متون"],
+        ["📢 پیام همگانی", "❌ خروج"]
+    ]
+    await update.message.reply_text("پنل مدیریت:", reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
+
+async def admin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    txt = update.message.text
+    if txt == "❌ خروج":
+        await update.message.reply_text("خروج.", reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
     
-    with db_lock:
-        conn=get_db()
-        conn.execute("INSERT INTO courses (day,part,req_refs,content_type,file_id,caption) VALUES (?,?,?,?,?,?)",
-                     (d,p,r,tp,fid,u.message.caption or u.message.text or "Course"))
-        conn.commit(); conn.close()
+    elif txt == "➕ افزودن آموزش":
+        await update.message.reply_text("شماره روز (عدد):")
+        return ADD_COURSE_DAY
     
-    kb = [["➕ افزودن آموزش", "🔴 مدیریت لایو"], ["📝 ویرایش متن", "❌ خروج"]]
-    await u.message.reply_text("✅ ذخیره شد.", reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
-    return ADMIN_PANEL
+    elif txt == "🔴 مدیریت لایو":
+        kb = [["آپلود آرشیو لایو", "تنظیم لینک لایو زنده"], ["حذف لایو زنده", "بازگشت"]]
+        await update.message.reply_text("بخش لایو:", reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
+        return MANAGE_LIVE_MENU
+    
+    elif txt == "📝 ویرایش متون":
+        kb = [["welcome", "rules", "about"], ["بازگشت"]]
+        await update.message.reply_text("کدام متن ویرایش شود؟\n(welcome: خوش آمد, about: درباره ما)", reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
+        return EDIT_TEXT_SELECT
+
+    elif txt == "👥 مدیریت کاربر/رفرال":
+        await update.message.reply_text("🆔 آیدی عددی کاربر را وارد کنید (یا فوروارد کنید):")
+        return MANAGE_USER_INPUT
+
+    elif txt == "📢 پیام همگانی":
+        await update.message.reply_text("پیام خود را بفرستید:")
+        return BROADCAST_MESSAGE
+    
+    else:
+        await admin_menu_show(update, context)
+        return ADMIN_MENU
+
+# --- افزودن آموزش ---
+async def add_course_day(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['c_day'] = update.message.text
+    await update.message.reply_text("شماره قسمت (عدد):")
+    return ADD_COURSE_PART
+
+async def add_course_part(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['c_part'] = update.message.text
+    await update.message.reply_text("🔢 تعداد رفرال مورد نیاز برای این قسمت:")
+    return ADD_COURSE_REFS
+
+async def add_course_refs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['c_req'] = update.message.text
+    await update.message.reply_text("📥 فایل آموزش یا متن را ارسال کنید:")
+    return ADD_COURSE_CONTENT
+
+async def add_course_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ctype = 'text'
+    fid = None
+    cap = update.message.caption or update.message.text or ""
+    
+    if update.message.video: ctype, fid = 'video', update.message.video.file_id
+    elif update.message.photo: ctype, fid = 'photo', update.message.photo[-1].file_id
+    elif update.message.document: ctype, fid = 'document', update.message.document.file_id
+    elif update.message.text: ctype = 'text'
+
+    conn = get_db()
+    conn.execute("INSERT INTO courses (day, part, req_refs, content_type, file_id, caption) VALUES (?,?,?,?,?,?)",
+                 (context.user_data['c_day'], context.user_data['c_part'], context.user_data['c_req'], ctype, fid, cap))
+    conn.commit()
+    conn.close()
+    await update.message.reply_text("✅ ذخیره شد.")
+    await admin_menu_show(update, context)
+    return ADMIN_MENU
+
+# --- مدیریت لایو ---
+async def manage_live_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    txt = update.message.text
+    if txt == "تنظیم لینک لایو زنده":
+        await update.message.reply_text("لینک و عنوان را به این صورت بفرستید:\nعنوان لایو\nلینک")
+        return SET_LIVE_LINK
+    elif txt == "آپلود آرشیو لایو":
+        await update.message.reply_text("فیلم لایو ضبط شده را بفرستید (در کپشن عنوان را بنویسید):")
+        return UPLOAD_LIVE_FILE
+    elif txt == "حذف لایو زنده":
+        conn = get_db()
+        conn.execute("UPDATE lives SET is_active=0")
+        conn.commit()
+        conn.close()
+        await update.message.reply_text("لایو غیرفعال شد.")
+        await admin_menu_show(update, context)
+        return ADMIN_MENU
+    else:
+        await admin_menu_show(update, context)
+        return ADMIN_MENU
+
+async def set_live_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lines = update.message.text.split('\n')
+    if len(lines) < 2:
+        await update.message.reply_text("فرمت اشتباه. خط اول عنوان، خط دوم لینک.")
+        return SET_LIVE_LINK
+    
+    conn = get_db()
+    conn.execute("UPDATE lives SET is_active=0") # غیرفعال کردن قبلی‌ها
+    conn.execute("INSERT INTO lives (title, link, is_active) VALUES (?, ?, 1)", (lines[0], lines[1]))
+    conn.commit()
+    conn.close()
+    await update.message.reply_text("✅ لایو زنده تنظیم شد.")
+    await admin_menu_show(update, context)
+    return ADMIN_MENU
+
+async def upload_live_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.video:
+        await update.message.reply_text("لطفا ویدیو ارسال کنید.")
+        return UPLOAD_LIVE_FILE
+    
+    fid = update.message.video.file_id
+    title = update.message.caption or "لایو ضبط شده"
+    date = datetime.now().strftime("%Y-%m-%d")
+    
+    conn = get_db()
+    conn.execute("INSERT INTO lives (title, file_id, date_recorded, is_active) VALUES (?, ?, ?, 0)", (title, fid, date))
+    conn.commit()
+    conn.close()
+    await update.message.reply_text("✅ به آرشیو اضافه شد.")
+    await admin_menu_show(update, context)
+    return ADMIN_MENU
+
+# --- مدیریت کاربر ---
+async def manage_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.message.text
+    if not uid.isdigit():
+        await update.message.reply_text("عدد وارد کنید.")
+        return MANAGE_USER_INPUT
+    
+    context.user_data['target_uid'] = uid
+    conn = get_db()
+    user = conn.execute("SELECT username, referrals_confirmed FROM users WHERE user_id=?", (uid,)).fetchone()
+    conn.close()
+    
+    if not user:
+        await update.message.reply_text("کاربر یافت نشد.")
+        return ADMIN_MENU
+    
+    kb = [["➕ افزایش رفرال", "➖ کاهش رفرال"], ["بازگشت"]]
+    await update.message.reply_text(f"👤 کاربر: {user[0]}\n📊 رفرال تایید شده: {user[1]}\n\nچه کاری انجام شود؟", reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
+    return MANAGE_USER_ACTION
+
+async def manage_user_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    action = update.message.text
+    target = context.user_data['target_uid']
+    conn = get_db()
+    
+    if action == "➕ افزایش رفرال":
+        conn.execute("UPDATE users SET referrals_confirmed = referrals_confirmed + 1 WHERE user_id=?", (target,))
+        msg = "یک رفرال اضافه شد."
+    elif action == "➖ کاهش رفرال":
+        conn.execute("UPDATE users SET referrals_confirmed = max(0, referrals_confirmed - 1) WHERE user_id=?", (target,))
+        msg = "یک رفرال کم شد (رد شد)."
+    else:
+        await admin_menu_show(update, context)
+        return ADMIN_MENU
+        
+    conn.commit()
+    conn.close()
+    await update.message.reply_text(f"✅ انجام شد: {msg}")
+    await admin_menu_show(update, context)
+    return ADMIN_MENU
+
+# --- ویرایش متن ---
+async def edit_text_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    key = update.message.text
+    if key == "بازگشت": return await admin_menu_show(update, context)
+    context.user_data['edit_key'] = key
+    curr = get_text(key)
+    await update.message.reply_text(f"متن فعلی:\n{curr}\n\nمتن جدید را بفرستید:")
+    return EDIT_TEXT_INPUT
+
+async def edit_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    new_text = update.message.text
+    key = context.user_data['edit_key']
+    conn = get_db()
+    conn.execute("INSERT OR REPLACE INTO dynamic_texts (key, content) VALUES (?, ?)", (key, new_text))
+    conn.commit()
+    conn.close()
+    await update.message.reply_text("✅ متن آپدیت شد.")
+    await admin_menu_show(update, context)
+    return ADMIN_MENU
+
+# --- برودکست ---
+async def broadcast_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    conn = get_db()
+    users = conn.execute("SELECT user_id FROM users").fetchall()
+    conn.close()
+    await update.message.reply_text(f"ارسال به {len(users)} نفر...")
+    for u in users:
+        try:
+            await update.message.copy(u[0])
+            await asyncio.sleep(0.05)
+        except: pass
+    await update.message.reply_text("تمام شد.")
+    await admin_menu_show(update, context)
+    return ADMIN_MENU
 
 # --- Main ---
 def main():
-    force_delete_webhook()
     init_db()
-    keep_alive()
-
+    keep_alive() # اجرای سرور Flask
+    
     app = Application.builder().token(TOKEN).build()
-
-    # ادمین هندلر
-    admin_conv = ConversationHandler(
+    
+    conv = ConversationHandler(
         entry_points=[CommandHandler("admin", admin_start)],
         states={
             ADMIN_AUTH: [MessageHandler(filters.TEXT, admin_auth)],
-            ADMIN_PANEL: [MessageHandler(filters.TEXT, admin_panel_h)],
-            INPUT_WAIT: [MessageHandler(filters.TEXT, admin_input)],
-            INPUT_WAIT + 1: [MessageHandler(filters.ALL, admin_save)],
+            ADMIN_MENU: [MessageHandler(filters.TEXT, admin_handler)],
+            ADD_COURSE_DAY: [MessageHandler(filters.TEXT, add_course_day)],
+            ADD_COURSE_PART: [MessageHandler(filters.TEXT, add_course_part)],
+            ADD_COURSE_REFS: [MessageHandler(filters.TEXT, add_course_refs)],
+            ADD_COURSE_CONTENT: [MessageHandler(filters.ALL, add_course_content)],
+            MANAGE_LIVE_MENU: [MessageHandler(filters.TEXT, manage_live_menu)],
+            SET_LIVE_LINK: [MessageHandler(filters.TEXT, set_live_link)],
+            UPLOAD_LIVE_FILE: [MessageHandler(filters.VIDEO, upload_live_file)],
+            MANAGE_USER_INPUT: [MessageHandler(filters.TEXT, manage_user_input)],
+            MANAGE_USER_ACTION: [MessageHandler(filters.TEXT, manage_user_action)],
+            EDIT_TEXT_SELECT: [MessageHandler(filters.TEXT, edit_text_select)],
+            EDIT_TEXT_INPUT: [MessageHandler(filters.TEXT, edit_text_input)],
+            BROADCAST_MESSAGE: [MessageHandler(filters.ALL, broadcast_msg)],
         },
-        fallbacks=[CommandHandler("cancel", start)]
+        fallbacks=[CommandHandler("cancel", admin_menu_show)]
     )
     
-    app.add_handler(admin_conv)
+    app.add_handler(conv)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(callback_handler))
-    app.add_handler(MessageHandler(filters.TEXT, message_handler))
-
-    print("✅ Bot V13 Started...")
-    app.run_polling(drop_pending_updates=True)
+    
+    print("Bot Started...")
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
