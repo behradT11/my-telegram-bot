@@ -1,0 +1,88 @@
+{
+  "course_description": "_14.01 Principles of Microeconomics_ is an introductory undergraduate course that teaches the fundamentals of microeconomics. This course introduces microeconomic concepts and analysis, supply and demand analysis, theories of the firm and individual behavior, competition and monopoly, and welfare economics. Students will also be introduced to the use of microeconomic applications to address problems in current economic policy throughout the semester.\n\nThis course is a core subject in MIT's undergraduate {{% resource_link \"65984597-5bfe-41fb-8d18-0ed323b73867\" \"Energy Studies Minor\" %}}. This Institute-wide program complements the deep expertise obtained in any major with a broad understanding of the interlinked realms of science, technology, and social sciences as they relate to energy and associated environmental challenges.\n\nCourse Format\n\nThis course has been designed for independent study. It includes all of the materials you will need to understand the concepts covered in this subject. The materials in this course include:\n\n- A complete set of **Lecture Videos** by Prof. Jon Gruber.\n- **Reading Assignments** in your choice of two textbooks – one of which is a free online edition - as preparation for the lectures.\n- Multiple-choice **Quizzes** to assess your understanding of the key concepts in each session.\n- **Problem Sets** with solution keys to test your ability to apply to concepts covered in lecture, and **Problem Solving Videos** to provide step-by-step instruction through several problem set solutions.\n- A collection of links **For Further Study** to provide supplemental online content.\n- A full set of **Exams**, including review material and practice exams to help you prepare.",
+  "course_description_html": "<p><em>14.01 Principles of Microeconomics</em> is an introductory undergraduate course that teaches the fundamentals of microeconomics. This course introduces microeconomic concepts and analysis, supply and demand analysis, theories of the firm and individual behavior, competition and monopoly, and welfare economics. Students will also be introduced to the use of microeconomic applications to address problems in current economic policy throughout the semester.</p>\n<p>This course is a core subject in MIT&rsquo;s undergraduate <a   class=\"external-link \"   target=\"_blank\"   href=\"http://mitei.mit.edu/education/energy-minor\"  aria-label=\"Energy Studies Minor (opens in a new tab)\"  >Energy Studies Minor</a>. This Institute-wide program complements the deep expertise obtained in any major with a broad understanding of the interlinked realms of science, technology, and social sciences as they relate to energy and associated environmental challenges.</p>\n<p>Course Format</p>\n<p>This course has been designed for independent study. It includes all of the materials you will need to understand the concepts covered in this subject. The materials in this course include:</p>\n<ul>\n<li>A complete set of <strong>Lecture Videos</strong> by Prof. Jon Gruber.</li>\n<li><strong>Reading Assignments</strong> in your choice of two textbooks – one of which is a free online edition - as preparation for the lectures.</li>\n<li>Multiple-choice <strong>Quizzes</strong> to assess your understanding of the key concepts in each session.</li>\n<li><strong>Problem Sets</strong> with solution keys to test your ability to apply to concepts covered in lecture, and <strong>Problem Solving Videos</strong> to provide step-by-step instruction through several problem set solutions.</li>\n<li>A collection of links <strong>For Further Study</strong> to provide supplemental online content.</li>\n<li>A full set of <strong>Exams</strong>, including review material and practice exams to help you prepare.</li>\n</ul>\n",
+  "course_image": {
+    "content": "4aca9caa-520d-6e6c-e06d-163f4c3ba7f8",
+    "website": "14-01sc-principles-of-microeconomics-fall-2011"
+  },
+  "course_image_metadata": {
+    "content_type": "resource",
+    "description": "Economics influences our everyday lives whether we realize it or not. Even our labor-leisure tradeoff, our decision to work or relax, is guided by economic principles. Image courtesy of Ingo Bernhardt on Flickr.",
+    "draft": false,
+    "file": "/courses/14-01sc-principles-of-microeconomics-fall-2011/4aca9caa520d6e6ce06d163f4c3ba7f8_14-01scf11.jpg",
+    "file_size": 16805,
+    "file_type": "image/jpeg",
+    "image_metadata": {
+      "caption": "Economics influences our everyday lives whether we realize it or not. Even our labor-leisure tradeoff, our decision to work or relax, is guided by economic principles. (Image courtesy of {{% resource_link \"fba5a9f5-0828-4d89-8c55-1b41aaac5ac9\" \"Ingo Bernhardt\" %}} on Flickr.)",
+      "credit": "Image courtesy of Ingo Bernhardt on Flickr.",
+      "image-alt": "Two girls working on the beach."
+    },
+    "iscjklanguage": false,
+    "learning_resource_types": [],
+    "license": "https://creativecommons.org/licenses/by-nc-sa/4.0/",
+    "ocw_type": "OCWImage",
+    "resourcetype": "Image",
+    "title": "14-01scf11.jpg",
+    "uid": "4aca9caa-520d-6e6c-e06d-163f4c3ba7f8",
+    "video_metadata": {
+      "youtube_id": null
+    }
+  },
+  "course_image_thumbnail": {
+    "content": "b0443e9a-3ae1-4009-721d-925056c6fb8e",
+    "website": "14-01sc-principles-of-microeconomics-fall-2011"
+  },
+  "course_title": "Principles of Microeconomics",
+  "department_numbers": [
+    "14"
+  ],
+  "extra_course_numbers": "",
+  "hide_download": false,
+  "image_src": "./static_resources/4aca9caa520d6e6ce06d163f4c3ba7f8_14-01scf11.jpg",
+  "instructors": [
+    {
+      "first_name": "Jonathan",
+      "last_name": "Gruber",
+      "middle_initial": "",
+      "salutation": "Prof.",
+      "title": "Prof. Jonathan Gruber",
+      "uid": "90ed1bca-4638-3198-4588-2a4923cfc575",
+      "url": "https://ocw.mit.edu/search/?q=Prof.+Jonathan+Gruber"
+    }
+  ],
+  "learning_resource_types": [
+    "Lecture Videos",
+    "Problem-solving Videos",
+    "Exams",
+    "Lecture Notes",
+    "Supplemental Exam Materials",
+    "Problem Sets",
+    "Problem Set Solutions",
+    "Exam Solutions",
+    "Open Textbooks"
+  ],
+  "legacy_uid": "9c9c4c0b-0702-0f20-fcf9-84d9e3924270",
+  "level": [
+    "Undergraduate"
+  ],
+  "mit_learn_topics": [
+    [
+      "Social Sciences",
+      "Economics"
+    ]
+  ],
+  "primary_course_number": "14.01SC",
+  "site_short_id": "14.01sc-fall-2011",
+  "site_uid": "ce2b30e4-62dd-466e-ba03-1e7ca83c9d20",
+  "site_url_path": "courses/14-01sc-principles-of-microeconomics-fall-2011",
+  "term": "Fall",
+  "title": "Course Metadata",
+  "topics": [
+    [
+      "Social Science",
+      "Economics",
+      "Microeconomics"
+    ]
+  ],
+  "year": "2011"
+}
